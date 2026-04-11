@@ -1,0 +1,210 @@
+export interface AnalysisRequest {
+  jobUrl?: string;
+  jobText?: string;
+  companyName: string;
+  location: string;
+  salaryMin: number;
+  salaryMax: number;
+  offerText?: string;
+}
+
+export interface ScrapedSource {
+  url: string;
+  type: 'google-news' | 'reddit' | 'glassdoor' | 'levels' | 'bls' | 'sec' | 'job-posting' | 'crunchbase';
+  title: string;
+  timestamp: string;
+}
+
+export interface GoogleNewsResult {
+  title: string;
+  url: string;
+  summary: string;
+  publishedAt: string;
+  source: string;
+}
+
+export interface RedditThread {
+  title: string;
+  url: string;
+  subreddit: string;
+  score: number;
+  commentCount: number;
+  topComments: string[];
+  body?: string;
+}
+
+export interface GlassdoorData {
+  overallRating: number | null;
+  ratingTrend: string;
+  ceoApproval: number | null;
+  recommendToFriend: number | null;
+  pros: string[];
+  cons: string[];
+  salaryData?: { role: string; min: number; max: number; median: number } | null;
+  interviewDifficulty: number | null;
+  interviewExperience: { positive: number; neutral: number; negative: number } | null;
+  reviewCount: number | null;
+}
+
+export interface LevelsData {
+  targetRoleSalaries: Array<{
+    company: string;
+    role: string;
+    base: number;
+    totalComp: number;
+    equity?: string;
+    location: string;
+  }>;
+  comparableSalaries: Array<{
+    company: string;
+    base: number;
+    totalComp: number;
+  }>;
+}
+
+export interface BLSData {
+  occupationTitle: string;
+  medianSalary: number | null;
+  p10: number | null;
+  p25: number | null;
+  p75: number | null;
+  p90: number | null;
+  yearOverYearChange: string;
+  locationData?: string;
+}
+
+export interface SECData {
+  filings: Array<{
+    date: string;
+    type: string;
+    description: string;
+    url: string;
+  }>;
+  layoffSignals: string[];
+  executiveDepartures: string[];
+}
+
+export interface JobPostingData {
+  title: string;
+  company: string;
+  location: string;
+  salaryRange?: { min: number; max: number } | null;
+  requirements: string[];
+  responsibilities: string[];
+  benefits: string[];
+  remotePolicy: string;
+  postedDate?: string;
+  fullText: string;
+  isRepost: boolean;
+}
+
+export interface ScrapeProgress {
+  step: string;
+  status: 'pending' | 'running' | 'done' | 'error';
+  count?: number;
+  message?: string;
+}
+
+export interface RadarScore {
+  financialStability: number;
+  culture: number;
+  leadership: number;
+  growthTrajectory: number;
+  retention: number;
+  transparency: number;
+}
+
+export interface Flag {
+  severity: 'critical' | 'watch' | 'minor';
+  title: string;
+  explanation: string;
+  icon: string;
+}
+
+export interface GreenFlag {
+  title: string;
+  explanation: string;
+  icon: string;
+}
+
+export interface TimelineEvent {
+  date: string;
+  type: 'layoff' | 'funding' | 'leadership' | 'lawsuit' | 'acquisition' | 'rating' | 'pivot' | 'other';
+  title: string;
+  description: string;
+  source?: string;
+}
+
+export interface SalaryIntelligence {
+  marketMin: number;
+  p25: number;
+  median: number;
+  p75: number;
+  marketMax: number;
+  offerValue: number;
+  percentile: number;
+  verdict: 'LOW' | 'FAIR' | 'STRONG';
+  targetSalary: number;
+}
+
+export interface RoleScorecardRow {
+  dimension: string;
+  status: 'green' | 'yellow' | 'red';
+  explanation: string;
+}
+
+export interface SentimentWord {
+  text: string;
+  value: number;
+  sentiment: 'positive' | 'negative' | 'neutral';
+}
+
+export interface NegotiationPlaybook {
+  levers: Array<{
+    lever: string;
+    negotiable: boolean;
+    priority: number;
+  }>;
+  openingLine: string;
+  pushbackResponse: string;
+  walkAwayRecommendation: string;
+}
+
+export interface AnalysisResult {
+  id: string;
+  companyName: string;
+  role: string;
+  location: string;
+  analyzedAt: string;
+  sourcesCount: number;
+  sources: ScrapedSource[];
+
+  verdict: 'STRONG OPPORTUNITY' | 'PROCEED WITH CAUTION' | 'SIGNIFICANT CONCERNS';
+  verdictExplanation: string;
+
+  radarScores: RadarScore;
+  salaryIntelligence: SalaryIntelligence;
+  timeline: TimelineEvent[];
+  redFlags: Flag[];
+  greenFlags: GreenFlag[];
+  roleScorecard: RoleScorecardRow[];
+  languageWarnings: Array<{ phrase: string; explanation: string; severity: 'red' | 'yellow' | 'grey' }>;
+  sentimentWords: SentimentWord[];
+  negotiationPlaybook?: NegotiationPlaybook;
+
+  companyIntelligence: string;
+  roleIntelligence: string;
+  salaryAnalysis: string;
+  offerAnalysis?: string;
+  bottomLine: string;
+
+  rawData: {
+    glassdoor?: GlassdoorData;
+    reddit?: RedditThread[];
+    news?: GoogleNewsResult[];
+    levels?: LevelsData;
+    bls?: BLSData;
+    sec?: SECData;
+    jobPosting?: JobPostingData;
+  };
+}
