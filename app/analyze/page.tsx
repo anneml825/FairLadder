@@ -2,90 +2,259 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { AnalysisResult } from '@/lib/types';
+import {
+  AnalysisRequest,
+  GlassdoorData,
+  LevelsData,
+  BLSData,
+  SECData,
+  ScrapedSource,
+  GoogleNewsResult,
+  RedditThread,
+  JobPostingData,
+} from '@/lib/types';
 
-interface ProgressStep {
-  step: string;
-  status: 'pending' | 'running' | 'done' | 'error';
-  count?: number;
+// ─── Step definitions ────────────────────────────────────────────────────────
+
+type StepId =
+  | 'job'
+  | 'news'
+  | 'reddit'
+  | 'glassdoor'
+  | 'levels'
+  | 'bls'
+  | 'sec'
+  | 'claude';
+
+type StepStatus = 'pending' | 'running' | 'done' | 'error';
+
+interface Step {
+  id: StepId;
+  label: string;
+  icon: string;
+  status: StepStatus;
+  count: number;
+  error?: string;
 }
 
-const STEP_ICONS: Record<string, string> = {
-  'Analyzing job posting': '📄',
-  'Processing job posting text': '📄',
-  'Scanning Google News': '📰',
-  'Reading Reddit threads': '🗣️',
-  'Scraping Glassdoor reviews': '⭐',
-  'Checking Levels.fyi salary data': '💰',
-  'Pulling BLS salary statistics': '📊',
-  'Searching SEC filings': '📋',
-  'Running intelligence analysis': '🤖',
-};
+const INITIAL_STEPS: Step[] = [
+  { id: 'job',      label: 'Analyzing job posting',         icon: '📄', status: 'pending', count: 0 },
+  { id: 'news',     label: 'Scanning Google News',           icon: '📰', status: 'pending', count: 0 },
+  { id: 'reddit',   label: 'Reading Reddit threads',         icon: '🗣️', status: 'pending', count: 0 },
+  { id: 'glassdoor',label: 'Scraping Glassdoor reviews',     icon: '⭐', status: 'pending', count: 0 },
+  { id: 'levels',   label: 'Checking Levels.fyi',            icon: '💰', status: 'pending', count: 0 },
+  { id: 'bls',      label: 'Pulling BLS salary data',        icon: '📊', status: 'pending', count: 0 },
+  { id: 'sec',      label: 'Searching SEC filings',          icon: '📋', status: 'pending', count: 0 },
+  { id: 'claude',   label: 'Running intelligence analysis',  icon: '🤖', status: 'pending', count: 0 },
+];
 
-const getIcon = (step: string) => {
-  for (const [key, icon] of Object.entries(STEP_ICONS)) {
-    if (step.toLowerCase().includes(key.toLowerCase())) return icon;
-  }
-  return '🔍';
-};
+// ─── Component ───────────────────────────────────────────────────────────────
 
 export default function AnalyzePage() {
   const router = useRouter();
-  const [steps, setSteps] = useState<ProgressStep[]>([]);
-  const [sourcesCount, setSourcesCount] = useState(0);
-  const [displayCount, setDisplayCount] = useState(0);
-  const [currentMessage, setCurrentMessage] = useState('Initializing intelligence scan...');
-  const [dots, setDots] = useState('');
+  const [steps, setSteps] = useState<Step[]>(INITIAL_STEPS);
+  const [totalSources, setTotalSources] = useState(0);
+  const [displaySources, setDisplaySources] = useState(0);
   const [error, setError] = useState('');
+  const [dots, setDots] = useState('');
   const abortRef = useRef<AbortController | null>(null);
-  const countRef = useRef(0);
 
-  // Animated dots
+  // Animated dots for running step
   useEffect(() => {
-    const interval = setInterval(() => {
-      setDots(d => d.length >= 3 ? '' : d + '.');
-    }, 400);
-    return () => clearInterval(interval);
+    const id = setInterval(() => setDots(d => d.length >= 3 ? '' : d + '.'), 400);
+    return () => clearInterval(id);
   }, []);
 
-  // Animate sources counter
+  // Smoothly animate the source counter up
   useEffect(() => {
-    if (sourcesCount > displayCount) {
-      const diff = sourcesCount - displayCount;
-      const step = Math.max(1, Math.ceil(diff / 10));
-      const timer = setTimeout(() => {
-        setDisplayCount(c => Math.min(c + step, sourcesCount));
-        countRef.current = Math.min(countRef.current + step, sourcesCount);
-      }, 50);
-      return () => clearTimeout(timer);
+    if (displaySources >= totalSources) return;
+    const id = setTimeout(() => {
+      setDisplaySources(d => Math.min(d + Math.max(1, Math.ceil((totalSources - d) / 8)), totalSources));
+    }, 60);
+    return () => clearTimeout(id);
+  }, [totalSources, displaySources]);
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+
+  const setStep = (id: StepId, patch: Partial<Step>) => {
+    setSteps(prev => prev.map(s => s.id === id ? { ...s, ...patch } : s));
+  };
+
+  const addSources = (n: number) => setTotalSources(t => t + n);
+
+  // Generic JSON fetcher with timeout
+  async function fetchStep<T>(
+    id: StepId,
+    url: string,
+    body: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<T | null> {
+    setStep(id, { status: 'running' });
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal,
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as T;
+      return data;
+    } catch (e: unknown) {
+      if ((e as { name: string }).name === 'AbortError') return null;
+      setStep(id, { status: 'error', error: (e as Error).message });
+      return null;
     }
-  }, [sourcesCount, displayCount]);
+  }
+
+  // ── Main effect ────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    const request = sessionStorage.getItem('fairladder_request');
-    if (!request) {
-      router.push('/');
-      return;
-    }
+    const stored = sessionStorage.getItem('fairladder_request');
+    if (!stored) { router.push('/'); return; }
 
-    const requestData = JSON.parse(request);
+    const request: AnalysisRequest = JSON.parse(stored);
     abortRef.current = new AbortController();
+    const signal = abortRef.current.signal;
 
-    const runAnalysis = async () => {
+    const run = async () => {
+      // ── 1. Job posting (only if URL provided) ────────────────────────────
+      let jobPosting: JobPostingData | undefined;
+      if (request.jobUrl) {
+        setStep('job', { status: 'running' });
+        const res = await fetchStep<{ data: JobPostingData; sources: ScrapedSource[] }>(
+          'job', '/api/scrape/job', { url: request.jobUrl }, signal,
+        );
+        if (res) {
+          jobPosting = res.data;
+          addSources(res.sources.length);
+          setStep('job', { status: 'done', count: 1 });
+        } else if (signal.aborted) return;
+        else setStep('job', { status: 'done', count: 0 });
+      } else {
+        // Paste mode — synthesize a jobPosting object from the pasted text
+        jobPosting = {
+          title: '', company: request.companyName, location: request.location,
+          salaryRange: null, requirements: [], responsibilities: [], benefits: [],
+          remotePolicy: 'Not specified', postedDate: '', fullText: request.jobText || '',
+          isRepost: false,
+        };
+        setStep('job', { status: 'done', count: 1 });
+        addSources(1);
+      }
+
+      const role = jobPosting?.title || '';
+
+      // ── 2. Fire all scraping calls in PARALLEL ────────────────────────────
+      const [newsRes, redditRes, glassdoorRes, levelsRes, blsRes, secRes] = await Promise.all([
+
+        fetchStep<{ results: GoogleNewsResult[]; sources: ScrapedSource[] }>(
+          'news', '/api/scrape/news', { companyName: request.companyName }, signal,
+        ),
+
+        fetchStep<{ threads: RedditThread[]; sources: ScrapedSource[] }>(
+          'reddit', '/api/scrape/reddit', { companyName: request.companyName, role }, signal,
+        ),
+
+        fetchStep<{ data: GlassdoorData; sources: ScrapedSource[] }>(
+          'glassdoor', '/api/scrape/glassdoor', { companyName: request.companyName, role }, signal,
+        ),
+
+        fetchStep<{ data: LevelsData; sources: ScrapedSource[] }>(
+          'levels', '/api/scrape/levels', { companyName: request.companyName, role, location: request.location }, signal,
+        ),
+
+        fetchStep<{ data: BLSData; sources: ScrapedSource[] }>(
+          'bls', '/api/scrape/bls', { role: role || request.companyName }, signal,
+        ),
+
+        fetchStep<{ data: SECData; sources: ScrapedSource[] }>(
+          'sec', '/api/scrape/sec', { companyName: request.companyName }, signal,
+        ),
+      ]);
+
+      if (signal.aborted) return;
+
+      // Mark each step done and add sources
+      if (newsRes) {
+        setStep('news', { status: 'done', count: newsRes.results.length });
+        addSources(newsRes.sources.length);
+      } else setStep('news', { status: newsRes === null && !signal.aborted ? 'error' : 'done', count: 0 });
+
+      if (redditRes) {
+        setStep('reddit', { status: 'done', count: redditRes.threads.length });
+        addSources(redditRes.sources.length);
+      } else setStep('reddit', { status: 'done', count: 0 });
+
+      if (glassdoorRes) {
+        setStep('glassdoor', { status: 'done', count: glassdoorRes.sources.length });
+        addSources(glassdoorRes.sources.length);
+      } else setStep('glassdoor', { status: 'done', count: 0 });
+
+      if (levelsRes) {
+        setStep('levels', { status: 'done', count: levelsRes.data.targetRoleSalaries.length + levelsRes.data.comparableSalaries.length });
+        addSources(levelsRes.sources.length);
+      } else setStep('levels', { status: 'done', count: 0 });
+
+      if (blsRes) {
+        setStep('bls', { status: 'done', count: 1 });
+        addSources(blsRes.sources.length);
+      } else setStep('bls', { status: 'done', count: 0 });
+
+      if (secRes) {
+        setStep('sec', { status: 'done', count: secRes.data.filings.length });
+        addSources(secRes.sources.length);
+      } else setStep('sec', { status: 'done', count: 0 });
+
+      // ── 3. Aggregate all sources ──────────────────────────────────────────
+      const allSources: ScrapedSource[] = [
+        ...(newsRes?.sources || []),
+        ...(redditRes?.sources || []),
+        ...(glassdoorRes?.sources || []),
+        ...(levelsRes?.sources || []),
+        ...(blsRes?.sources || []),
+        ...(secRes?.sources || []),
+      ];
+
+      // ── 4. Claude analysis (streaming from Edge function) ─────────────────
+      setStep('claude', { status: 'running' });
+
+      const defaultGlassdoor: GlassdoorData = {
+        overallRating: null, ratingTrend: 'N/A', ceoApproval: null,
+        recommendToFriend: null, pros: [], cons: [], salaryData: null,
+        interviewDifficulty: null, interviewExperience: null, reviewCount: null,
+      };
+      const defaultLevels: LevelsData = { targetRoleSalaries: [], comparableSalaries: [] };
+      const defaultBLS: BLSData = {
+        occupationTitle: role || '', medianSalary: null,
+        p10: null, p25: null, p75: null, p90: null,
+        yearOverYearChange: 'N/A', locationData: '',
+      };
+      const defaultSEC: SECData = { filings: [], layoffSignals: [], executiveDepartures: [] };
+
       try {
-        const response = await fetch('/api/analyze', {
+        const claudeRes = await fetch('/api/claude', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(requestData),
-          signal: abortRef.current!.signal,
+          body: JSON.stringify({
+            request,
+            scrapedData: {
+              news: newsRes?.results || [],
+              reddit: redditRes?.threads || [],
+              glassdoor: glassdoorRes?.data || defaultGlassdoor,
+              levels: levelsRes?.data || defaultLevels,
+              bls: blsRes?.data || defaultBLS,
+              sec: secRes?.data || defaultSEC,
+              jobPosting,
+            },
+            sources: allSources,
+          }),
+          signal,
         });
 
-        if (!response.body) {
-          setError('No response from server');
-          return;
-        }
+        if (!claudeRes.body) throw new Error('No response stream');
 
-        const reader = response.body.getReader();
+        const reader = claudeRes.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
 
@@ -101,28 +270,15 @@ export default function AnalyzePage() {
             if (!line.startsWith('data: ')) continue;
             try {
               const data = JSON.parse(line.slice(6));
-
-              if (data.type === 'progress') {
-                const { step, status, sourcesCount: newCount } = data;
-                setCurrentMessage(step);
-                if (newCount !== undefined) {
-                  setSourcesCount(prev => prev + newCount);
-                }
-
-                setSteps(prev => {
-                  const existing = prev.find(s => s.step === step);
-                  if (existing) {
-                    return prev.map(s => s.step === step ? { ...s, status, count: newCount } : s);
-                  }
-                  return [...prev, { step, status, count: newCount }];
-                });
-
+              if (data.type === 'thinking') {
+                // Show progress during Claude streaming
+                setStep('claude', { status: 'running', count: data.chars });
               } else if (data.type === 'result') {
-                const result: AnalysisResult = data.data;
-                sessionStorage.setItem('fairladder_result', JSON.stringify(result));
+                setStep('claude', { status: 'done', count: 1 });
+                sessionStorage.setItem('fairladder_result', JSON.stringify(data.data));
                 router.push('/results');
-
               } else if (data.type === 'error') {
+                setStep('claude', { status: 'error', error: data.message });
                 setError(data.message || 'Analysis failed');
               }
             } catch { /* skip malformed SSE */ }
@@ -130,21 +286,21 @@ export default function AnalyzePage() {
         }
       } catch (e: unknown) {
         if ((e as { name: string }).name !== 'AbortError') {
+          setStep('claude', { status: 'error' });
           setError('Analysis failed. Please try again.');
         }
       }
     };
 
-    runAnalysis();
-
-    return () => {
-      abortRef.current?.abort();
-    };
+    run();
+    return () => abortRef.current?.abort();
   }, [router]);
 
+  // ── Render ─────────────────────────────────────────────────────────────────
+
+  const doneCount = steps.filter(s => s.status === 'done').length;
+  const progress = Math.max(4, Math.round((doneCount / steps.length) * 100));
   const runningStep = steps.find(s => s.status === 'running');
-  const doneSteps = steps.filter(s => s.status === 'done');
-  const progress = Math.max(5, (doneSteps.length / 9) * 100);
 
   return (
     <div className="min-h-screen grid-pattern flex flex-col items-center justify-center px-4 py-16">
@@ -159,10 +315,10 @@ export default function AnalyzePage() {
         <span className="font-bold tracking-tight text-white">FAIRLADDER<span className="text-indigo-400">.AI</span></span>
       </div>
 
-      {/* Main card */}
       <div className="w-full max-w-xl">
         <div className="glass rounded-2xl p-8 border border-[#1e2736]">
           {error ? (
+            /* Error state */
             <div className="text-center py-8">
               <div className="text-4xl mb-4">⚠️</div>
               <h2 className="text-xl font-bold text-white mb-2">Analysis Failed</h2>
@@ -179,11 +335,12 @@ export default function AnalyzePage() {
               {/* Header */}
               <div className="text-center mb-8">
                 <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-indigo-500/30 bg-indigo-500/10 text-indigo-300 text-xs font-medium mb-4">
-                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse inline-block"></span>
+                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse inline-block" />
                   Intelligence scan in progress
                 </div>
-                <h2 className="text-2xl font-bold text-white mb-2">
-                  {runningStep ? runningStep.step + dots : 'Initializing' + dots}
+
+                <h2 className="text-xl font-bold text-white mb-3">
+                  {runningStep ? `${runningStep.label}${dots}` : `Initializing${dots}`}
                 </h2>
 
                 {/* Sources counter */}
@@ -192,33 +349,37 @@ export default function AnalyzePage() {
                     <path d="M9 17H7A5 5 0 0 1 7 7h2M15 7h2a5 5 0 0 1 0 10h-2M11 12h2" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
                   </svg>
                   <span>
-                    <span className="text-white font-bold text-lg tabular-nums">{displayCount}</span> sources found
+                    <span className="text-white font-bold text-2xl tabular-nums">{displaySources}</span>
+                    <span className="ml-1">sources found</span>
                   </span>
                 </div>
               </div>
 
               {/* Progress bar */}
-              <div className="h-1.5 bg-[#1e2736] rounded-full mb-8 overflow-hidden">
+              <div className="h-1.5 bg-[#1e2736] rounded-full mb-6 overflow-hidden">
                 <div
-                  className="h-full bg-indigo-500 rounded-full transition-all duration-1000 ease-out"
+                  className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 rounded-full transition-all duration-700 ease-out"
                   style={{ width: `${progress}%` }}
                 />
               </div>
 
               {/* Steps list */}
-              <div className="space-y-3">
-                {steps.map((step, i) => (
+              <div className="space-y-2">
+                {steps.map((step) => (
                   <div
-                    key={i}
-                    className={`flex items-center gap-3 p-3 rounded-xl transition-all duration-300 ${
-                      step.status === 'running' ? 'bg-indigo-500/10 border border-indigo-500/20' :
-                      step.status === 'done' ? 'bg-[#0d1117]/50' :
-                      step.status === 'error' ? 'bg-red-500/10 border border-red-500/20' :
-                      'opacity-40'
+                    key={step.id}
+                    className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all duration-300 ${
+                      step.status === 'running'
+                        ? 'bg-indigo-500/10 border border-indigo-500/20'
+                        : step.status === 'done'
+                        ? 'bg-[#0d1117]/40'
+                        : step.status === 'error'
+                        ? 'bg-red-500/8 border border-red-500/20'
+                        : 'opacity-30'
                     }`}
                   >
-                    {/* Status indicator */}
-                    <div className="flex-shrink-0 w-6 h-6 flex items-center justify-center">
+                    {/* Status icon */}
+                    <div className="w-5 h-5 flex items-center justify-center flex-shrink-0">
                       {step.status === 'done' ? (
                         <div className="w-5 h-5 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center">
                           <svg viewBox="0 0 24 24" fill="none" className="w-3 h-3 text-emerald-400">
@@ -227,54 +388,47 @@ export default function AnalyzePage() {
                         </div>
                       ) : step.status === 'running' ? (
                         <svg className="animate-spin w-4 h-4 text-indigo-400" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
                         </svg>
                       ) : step.status === 'error' ? (
-                        <span className="text-red-400 text-sm">✕</span>
+                        <span className="text-red-400 text-xs font-bold">✕</span>
                       ) : (
-                        <div className="w-4 h-4 rounded-full border border-[#2a3448]" />
+                        <div className="w-4 h-4 rounded-full border border-[#2a3448]"/>
                       )}
                     </div>
 
-                    {/* Icon */}
-                    <span className="text-base">{getIcon(step.step)}</span>
+                    {/* Emoji icon */}
+                    <span className="text-sm flex-shrink-0">{step.icon}</span>
 
-                    {/* Step text */}
-                    <div className="flex-1 min-w-0">
-                      <span className={`text-sm ${
-                        step.status === 'running' ? 'text-white font-medium' :
-                        step.status === 'done' ? 'text-[#8892a4]' :
-                        'text-[#4a5568]'
-                      }`}>
-                        {step.step}
-                      </span>
-                    </div>
+                    {/* Label */}
+                    <span className={`flex-1 text-sm ${
+                      step.status === 'running' ? 'text-white font-medium' :
+                      step.status === 'done' ? 'text-[#8892a4]' :
+                      step.status === 'error' ? 'text-red-400' :
+                      'text-[#4a5568]'
+                    }`}>
+                      {step.label}
+                      {step.status === 'running' && step.id === 'claude' && step.count > 0 && (
+                        <span className="text-indigo-400 text-xs ml-1 font-mono">{step.count} chars</span>
+                      )}
+                    </span>
 
                     {/* Count badge */}
-                    {step.status === 'done' && step.count !== undefined && step.count > 0 && (
-                      <span className="flex-shrink-0 text-xs px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-mono">
+                    {step.status === 'done' && step.count > 0 && step.id !== 'claude' && (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-mono flex-shrink-0">
                         +{step.count}
                       </span>
                     )}
-                    {step.status === 'running' && (
-                      <span className="flex-shrink-0 text-xs text-indigo-400 font-mono">{dots}</span>
+                    {step.status === 'running' && step.id !== 'claude' && (
+                      <span className="text-xs text-indigo-400 font-mono flex-shrink-0">{dots}</span>
                     )}
-                  </div>
-                ))}
-
-                {/* Pending placeholder steps */}
-                {steps.length < 9 && Array.from({ length: Math.max(0, 9 - steps.length) }).map((_, i) => (
-                  <div key={`pending-${i}`} className="flex items-center gap-3 p-3 rounded-xl opacity-20">
-                    <div className="w-5 h-5 rounded-full border border-[#2a3448] flex-shrink-0" />
-                    <div className="h-3 bg-[#1e2736] rounded flex-1 shimmer" />
                   </div>
                 ))}
               </div>
 
-              {/* Bottom note */}
               <p className="text-center text-xs text-[#4a5568] mt-6">
-                Scanning public sources in real time — this takes 30–60 seconds
+                Sources scanned in parallel — takes about 15–30 seconds
               </p>
             </>
           )}
@@ -283,8 +437,8 @@ export default function AnalyzePage() {
 
       {/* Background orbs */}
       <div className="fixed inset-0 pointer-events-none overflow-hidden -z-10">
-        <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-indigo-500/5 rounded-full blur-3xl" />
-        <div className="absolute bottom-1/4 right-1/4 w-64 h-64 bg-purple-500/5 rounded-full blur-3xl" />
+        <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-indigo-500/5 rounded-full blur-3xl"/>
+        <div className="absolute bottom-1/4 right-1/4 w-64 h-64 bg-purple-500/5 rounded-full blur-3xl"/>
       </div>
     </div>
   );
