@@ -44,6 +44,9 @@ export async function scrapeGoogleNews(
   const queries = [
     `${companyName} layoffs OR scandal OR lawsuit OR funding OR leadership OR acquisition OR pivot OR CEO OR executives`,
     `${companyName} review OR culture OR employees OR toxic OR "great place to work"`,
+    `${companyName} salary OR compensation OR pay OR raise OR bonus`,
+    `${companyName} interview OR hiring OR fired OR laid off OR restructuring`,
+    `${companyName} remote work OR "return to office" OR "work from home" OR RTO`,
   ];
 
   for (const q of queries) {
@@ -77,14 +80,15 @@ export async function scrapeGoogleNews(
     });
   }
 
-  return { results: results.slice(0, 40), sources: sources.slice(0, 40) };
+  return { results: results.slice(0, 100), sources: sources.slice(0, 100) };
 }
 
 // ── REDDIT ───────────────────────────────────────────────────────────────────
 const SUBREDDITS = [
   'cscareerquestions', 'jobs', 'careerguidance', 'finance', 'medicine',
   'law', 'accounting', 'marketing', 'sales', 'humanresources',
-  'techsupport', 'engineering',
+  'techsupport', 'engineering', 'devops', 'datascience', 'MachineLearning',
+  'recruiting', 'layoffs', 'WorkReform', 'antiwork', 'personalfinance',
 ];
 
 export async function scrapeReddit(
@@ -101,8 +105,8 @@ export async function scrapeReddit(
   // Search Reddit JSON API (public, no auth needed for basic search)
   const searchQuery = `${companyName} ${role}`.slice(0, 100);
 
-  for (const sub of subsToSearch.slice(0, 8)) {
-    const url = `https://www.reddit.com/r/${sub}/search.json?q=${encodeURIComponent(searchQuery)}&sort=top&limit=5&t=year`;
+  for (const sub of subsToSearch) {
+    const url = `https://www.reddit.com/r/${sub}/search.json?q=${encodeURIComponent(searchQuery)}&sort=top&limit=10&t=year`;
     try {
       const res = await axios.get(url, {
         headers: {
@@ -161,14 +165,14 @@ export async function scrapeReddit(
   }
 
   // Also search all of Reddit
-  const allRedditUrl = `https://www.reddit.com/search.json?q=${encodeURIComponent(companyName)}&sort=top&limit=10&t=year`;
+  const allRedditUrl = `https://www.reddit.com/search.json?q=${encodeURIComponent(companyName)}&sort=top&limit=25&t=year`;
   try {
     const res = await axios.get(allRedditUrl, {
       headers: { ...HEADERS, Accept: 'application/json' },
       timeout: 10000,
     });
     const posts = res.data?.data?.children || [];
-    for (const post of posts.slice(0, 10)) {
+    for (const post of posts.slice(0, 25)) {
       const p = post.data;
       if (!p?.title) continue;
       const threadUrl = `https://www.reddit.com${p.permalink}`;
@@ -192,7 +196,7 @@ export async function scrapeReddit(
     }
   } catch { /* skip */ }
 
-  return { threads: threads.slice(0, 30), sources };
+  return { threads: threads.slice(0, 60), sources };
 }
 
 // ── GLASSDOOR ────────────────────────────────────────────────────────────────
@@ -498,7 +502,7 @@ export async function scrapeSEC(
     try {
       const json = JSON.parse(html);
       const hits = json?.hits?.hits || [];
-      for (const hit of hits.slice(0, 10)) {
+      for (const hit of hits.slice(0, 25)) {
         const src = hit._source;
         const description = src?.display_names?.[0] || src?.entity_name || '';
         const filingDate = src?.period_of_report || src?.file_date || '';
