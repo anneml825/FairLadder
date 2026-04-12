@@ -314,8 +314,8 @@ export default function HomePage() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {[
               { icon: '📰', title: 'Company News', desc: '12 months of headlines — layoffs, lawsuits, leadership exits, and anything else that changes the picture before you walk in' },
-              { icon: '🗣️', title: 'What Employees Actually Say', desc: 'Real discussions from Reddit and career communities — not the polished reviews, the unfiltered ones' },
-              { icon: '⭐', title: 'Glassdoor Intelligence', desc: 'Rating trends over time, CEO approval, recurring themes in reviews, and what candidates experienced in the interview process' },
+              { icon: '🗣️', title: 'What Employees Actually Say', desc: 'Unfiltered conversations from career communities across the web — not the polished press releases, the real sentiment' },
+              { icon: '⭐', title: 'Company Review Intelligence', desc: 'Rating trends, CEO approval, recurring themes in employee reviews, and what candidates experienced in the interview process' },
               { icon: '💰', title: 'Salary Reality Check', desc: 'Where your offer actually sits in the market — by role, level, and location — not what the company wants you to believe is competitive' },
               { icon: '📋', title: 'Financial Health Signals', desc: 'SEC filings, executive departures, material events — signals that tell you whether this company looks different in 18 months' },
               { icon: '🤖', title: 'Your Verdict', desc: 'Everything synthesized into one honest assessment — red flags ranked, negotiation leverage identified, plain English bottom line' },

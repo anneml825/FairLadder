@@ -37,7 +37,7 @@ export default function SentimentViz({ words }: Props) {
       <div className="flex items-start justify-between mb-6">
         <div>
           <h3 className="text-sm font-semibold text-white uppercase tracking-wide">Sentiment Analysis</h3>
-          <p className="text-xs text-[#8892a4] mt-0.5">From Reddit & Glassdoor — sized by frequency</p>
+          <p className="text-xs text-[#8892a4] mt-0.5">From job posting & web sources — sized by frequency</p>
         </div>
       </div>
 

@@ -84,99 +84,36 @@ export async function scrapeGoogleNews(
 }
 
 // ── REDDIT ───────────────────────────────────────────────────────────────────
-const SUBREDDITS = [
-  'cscareerquestions', 'jobs', 'careerguidance', 'finance', 'medicine',
-  'law', 'accounting', 'marketing', 'sales', 'humanresources',
-  'techsupport', 'engineering', 'devops', 'datascience', 'MachineLearning',
-  'recruiting', 'layoffs', 'WorkReform', 'antiwork', 'personalfinance',
-];
-
 export async function scrapeReddit(
   companyName: string,
   role: string
 ): Promise<{ threads: RedditThread[]; sources: ScrapedSource[] }> {
   const threads: RedditThread[] = [];
   const sources: ScrapedSource[] = [];
+  const seen = new Set<string>();
 
-  // Try company-specific subreddit first
-  const companySub = companyName.toLowerCase().replace(/[^a-z0-9]/g, '');
-  const subsToSearch = [companySub, ...SUBREDDITS];
+  // Run 4 focused all-Reddit searches — avoids per-subreddit loop which always times out
+  const queries = [
+    companyName,
+    `${companyName} ${role}`.slice(0, 80),
+    `${companyName} salary compensation`,
+    `${companyName} layoffs culture interview`,
+  ];
 
-  // Search Reddit JSON API (public, no auth needed for basic search)
-  const searchQuery = `${companyName} ${role}`.slice(0, 100);
-
-  for (const sub of subsToSearch) {
-    const url = `https://www.reddit.com/r/${sub}/search.json?q=${encodeURIComponent(searchQuery)}&sort=top&limit=10&t=year`;
+  for (const q of queries) {
+    const url = `https://www.reddit.com/search.json?q=${encodeURIComponent(q)}&sort=top&limit=25&t=year`;
     try {
       const res = await axios.get(url, {
-        headers: {
-          ...HEADERS,
-          Accept: 'application/json',
-        },
-        timeout: 10000,
+        headers: { ...HEADERS, Accept: 'application/json' },
+        timeout: 7000,
       });
-
       const posts = res.data?.data?.children || [];
       for (const post of posts) {
         const p = post.data;
         if (!p?.title) continue;
-
         const threadUrl = `https://www.reddit.com${p.permalink}`;
-        const topComments: string[] = [];
-
-        // Fetch top comments for the most relevant threads
-        if (threads.length < 15) {
-          try {
-            const commentsRes = await axios.get(`${threadUrl}.json?sort=top&limit=5`, {
-              headers: { ...HEADERS, Accept: 'application/json' },
-              timeout: 8000,
-            });
-            const commentData = commentsRes.data?.[1]?.data?.children || [];
-            for (const c of commentData.slice(0, 5)) {
-              const body = c.data?.body;
-              if (body && body.length > 20 && body !== '[removed]' && body !== '[deleted]') {
-                topComments.push(body.slice(0, 500));
-              }
-            }
-          } catch { /* skip comment fetch */ }
-        }
-
-        threads.push({
-          title: p.title,
-          url: threadUrl,
-          subreddit: p.subreddit,
-          score: p.score || 0,
-          commentCount: p.num_comments || 0,
-          topComments,
-          body: p.selftext?.slice(0, 500),
-        });
-
-        sources.push({
-          url: threadUrl,
-          type: 'reddit',
-          title: p.title,
-          timestamp: new Date((p.created_utc || 0) * 1000).toISOString(),
-        });
-      }
-    } catch { /* skip failed subreddit */ }
-
-    // Small delay to avoid rate limiting
-    await new Promise(r => setTimeout(r, 300));
-  }
-
-  // Also search all of Reddit
-  const allRedditUrl = `https://www.reddit.com/search.json?q=${encodeURIComponent(companyName)}&sort=top&limit=25&t=year`;
-  try {
-    const res = await axios.get(allRedditUrl, {
-      headers: { ...HEADERS, Accept: 'application/json' },
-      timeout: 10000,
-    });
-    const posts = res.data?.data?.children || [];
-    for (const post of posts.slice(0, 25)) {
-      const p = post.data;
-      if (!p?.title) continue;
-      const threadUrl = `https://www.reddit.com${p.permalink}`;
-      if (!threads.find(t => t.url === threadUrl)) {
+        if (seen.has(threadUrl)) continue;
+        seen.add(threadUrl);
         threads.push({
           title: p.title,
           url: threadUrl,
@@ -184,7 +121,7 @@ export async function scrapeReddit(
           score: p.score || 0,
           commentCount: p.num_comments || 0,
           topComments: [],
-          body: p.selftext?.slice(0, 300),
+          body: p.selftext?.slice(0, 500),
         });
         sources.push({
           url: threadUrl,
@@ -193,8 +130,8 @@ export async function scrapeReddit(
           timestamp: new Date((p.created_utc || 0) * 1000).toISOString(),
         });
       }
-    }
-  } catch { /* skip */ }
+    } catch { /* skip failed query */ }
+  }
 
   return { threads: threads.slice(0, 60), sources };
 }
@@ -273,57 +210,87 @@ export async function scrapeGlassdoor(
     interviewDifficulty: null, interviewExperience: null, reviewCount: null,
   };
 
-  // Strategy 1: Google News RSS to find the actual Glassdoor URL
-  const googleRss = `https://news.google.com/rss/search?q=site:glassdoor.com+"${encodeURIComponent(companyName)}"&hl=en-US&gl=US&ceid=US:en`;
-  const rssHtml = await fetchHtml(googleRss);
-  let glassdoorUrl = '';
-  if (rssHtml) {
-    const $rss = cheerio.load(rssHtml, { xmlMode: true });
-    $rss('item link, item guid').each((_, el) => {
-      const href = $rss(el).text().trim();
-      if (href.includes('glassdoor.com/Overview') || href.includes('glassdoor.com/Reviews')) {
-        glassdoorUrl = href;
-        return false;
+  // Strategy 1: DuckDuckGo web search — finds Glassdoor snippets without hitting Glassdoor directly
+  const ddgQuery = `${companyName} glassdoor reviews rating employees`;
+  const ddgHtml = await fetchHtml(
+    `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(ddgQuery)}`,
+    { Referer: 'https://lite.duckduckgo.com/', 'Accept-Language': 'en-US,en;q=0.9' }
+  );
+  if (ddgHtml && ddgHtml.length > 1000) {
+    const plainText = ddgHtml.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
+
+    // Extract overall rating
+    const ratingM = plainText.match(/(\d\.\d)\s*(?:out of 5|stars?|\/5|rating)/i);
+    if (ratingM) data.overallRating = parseFloat(ratingM[1]);
+
+    // Extract review count
+    const rcM = plainText.match(/([\d,]+)\s*reviews?/i);
+    if (rcM) data.reviewCount = parseInt(rcM[1].replace(/,/g, ''));
+
+    // Extract CEO approval
+    const ceoM = plainText.match(/(\d+)%\s*(?:approve|approval)/i);
+    if (ceoM) data.ceoApproval = parseInt(ceoM[1]);
+
+    // Extract pros/cons from snippets
+    const $d = cheerio.load(ddgHtml);
+    $d('td, span, .result-snippet').each((_, el) => {
+      const t = $d(el).text().trim();
+      if (t.length < 30 || t.length > 350) return;
+      const lower = t.toLowerCase();
+      if (data.pros.length < 5 &&
+        (lower.includes('great') || lower.includes('good culture') || lower.includes('benefits') ||
+         lower.includes('opportunity') || lower.includes('learning') || lower.includes('flexible'))) {
+        data.pros.push(t.slice(0, 200));
       }
+      if (data.cons.length < 5 &&
+        (lower.includes('bad') || lower.includes('poor management') || lower.includes('toxic') ||
+         lower.includes('work-life') || lower.includes('underpaid') || lower.includes('turnover'))) {
+        data.cons.push(t.slice(0, 200));
+      }
+    });
+
+    sources.push({
+      url: `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(ddgQuery)}`,
+      type: 'glassdoor',
+      title: `${companyName} Reviews - Web Search`,
+      timestamp: new Date().toISOString(),
     });
   }
 
-  // Strategy 2: Try common slug patterns
-  if (!glassdoorUrl) {
-    const slug = companyName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-    const slugNoDash = companyName.toLowerCase().replace(/[^a-z0-9]/g, '');
-    const candidates = [
-      `https://www.glassdoor.com/Reviews/${slug}-Reviews-E.htm`,
-      `https://www.glassdoor.com/Overview/Working-at-${slug}-EI_IE.htm`,
-      `https://www.glassdoor.com/Reviews/${slugNoDash}-Reviews-E.htm`,
-    ];
-    for (const c of candidates) {
-      const h = await fetchGlassdoor(c);
-      if (h && h.length > 5000 && !h.includes('Page Not Found') && !h.includes('no results')) {
-        glassdoorUrl = c;
-        parseGlassdoorHtml(h, data, c, sources, companyName);
-        break;
-      }
-    }
-  } else {
-    const h = await fetchGlassdoor(glassdoorUrl);
-    if (h) parseGlassdoorHtml(h, data, glassdoorUrl, sources, companyName);
-  }
-
-  // Strategy 3: Indeed company reviews as fallback
-  if (!data.overallRating) {
+  // Strategy 2: Indeed company reviews — structured page with JSON-LD
+  if (!data.overallRating || data.pros.length === 0) {
     const indeedSlug = companyName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
     const indeedUrl = `https://www.indeed.com/cmp/${indeedSlug}/reviews`;
     const indeedHtml = await fetchHtml(indeedUrl, { Referer: 'https://www.indeed.com/' });
     if (indeedHtml && indeedHtml.length > 3000) {
       const $i = cheerio.load(indeedHtml);
-      const ratingText = $i('[data-testid="rating-number"], .css-1aq5k5r, [itemprop="ratingValue"]').first().text().trim();
-      const rating = parseFloat(ratingText);
-      if (!isNaN(rating) && rating >= 1 && rating <= 5) data.overallRating = rating;
 
-      const rcText = $i('[data-testid="review-count"]').first().text().trim();
-      const rcM = rcText.match(/[\d,]+/);
-      if (rcM) data.reviewCount = parseInt(rcM[0].replace(/,/g, ''));
+      // JSON-LD has structured rating data
+      $i('script[type="application/ld+json"]').each((_, el) => {
+        try {
+          const json = JSON.parse($i(el).html() || '{}');
+          if (json.aggregateRating?.ratingValue && !data.overallRating) {
+            data.overallRating = parseFloat(json.aggregateRating.ratingValue);
+            data.reviewCount = parseInt(json.aggregateRating.reviewCount || '0');
+          }
+        } catch { /* skip */ }
+      });
+
+      // Selector + regex fallbacks
+      if (!data.overallRating) {
+        const ratingText = $i('[data-testid="rating-number"], [itemprop="ratingValue"], .css-1aq5k5r').first().text().trim();
+        const r = parseFloat(ratingText);
+        if (!isNaN(r) && r >= 1 && r <= 5) data.overallRating = r;
+      }
+      if (!data.overallRating) {
+        const bodyText = $i('body').text();
+        const m = bodyText.match(/(\d\.\d)\s*(?:out of 5|stars?)/i);
+        if (m) data.overallRating = parseFloat(m[1]);
+        if (!data.reviewCount) {
+          const rcM = bodyText.match(/([\d,]+)\s*reviews?/i);
+          if (rcM) data.reviewCount = parseInt(rcM[1].replace(/,/g, ''));
+        }
+      }
 
       $i('[data-testid="pros-list"] li, [class*="pros"] li').each((_, el) => {
         data.pros.push($i(el).text().trim().slice(0, 200));
@@ -339,82 +306,83 @@ export async function scrapeGlassdoor(
   return { data, sources };
 }
 
-// ── LEVELS.FYI ───────────────────────────────────────────────────────────────
+// ── LEVELS.FYI / SALARY INTELLIGENCE ────────────────────────────────────────
+// Levels.fyi is JS-rendered so we search the web for salary data instead
+function extractSalaries(text: string): number[] {
+  const matches = [...text.matchAll(/\$\s*(\d{2,3}(?:,\d{3})?(?:\.\d+)?)\s*(k|K)?/g)];
+  return matches
+    .map(m => {
+      const n = parseFloat(m[1].replace(/,/g, ''));
+      return m[2] ? n * 1000 : n;
+    })
+    .filter(n => n >= 40000 && n <= 700000);
+}
+
 export async function scrapeLevels(
   companyName: string,
   role: string,
   location: string
 ): Promise<{ data: LevelsData; sources: ScrapedSource[] }> {
   const sources: ScrapedSource[] = [];
-  const data: LevelsData = {
-    targetRoleSalaries: [],
-    comparableSalaries: [],
-  };
+  const data: LevelsData = { targetRoleSalaries: [], comparableSalaries: [] };
 
-  const companySlug = companyName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-  const url = `https://www.levels.fyi/companies/${companySlug}/salaries/`;
+  // Search DuckDuckGo for company-specific salary data
+  const companyQuery = `${companyName} ${role} salary compensation`;
+  const ddgHtml = await fetchHtml(
+    `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(companyQuery)}`,
+    { Referer: 'https://lite.duckduckgo.com/' }
+  );
+  if (ddgHtml && ddgHtml.length > 1000) {
+    const plain = ddgHtml.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
+    const salaries = extractSalaries(plain);
+    if (salaries.length > 0) {
+      const avg = Math.round(salaries.reduce((a, b) => a + b, 0) / salaries.length);
+      data.targetRoleSalaries.push({ company: companyName, role, base: avg, totalComp: Math.round(avg * 1.3), location });
+    }
+    sources.push({ url: `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(companyQuery)}`, type: 'levels', title: `${companyName} ${role} Salary Search`, timestamp: new Date().toISOString() });
+  }
 
-  const html = await fetchHtml(url);
-  if (html) {
-    const $ = cheerio.load(html);
-
-    sources.push({
-      url,
-      type: 'levels',
-      title: `${companyName} Salaries - Levels.fyi`,
-      timestamp: new Date().toISOString(),
-    });
-
-    // Extract salary rows
-    $('table tbody tr, [data-testid="salary-row"]').each((_, el) => {
-      const cells = $(el).find('td');
-      if (cells.length >= 3) {
-        const roleText = $(cells[0]).text().trim();
-        const baseText = $(cells[1]).text().trim().replace(/[^0-9]/g, '');
-        const totalText = $(cells[2]).text().trim().replace(/[^0-9]/g, '');
-
-        const base = parseInt(baseText);
-        const total = parseInt(totalText);
-
-        if (!isNaN(base) && base > 0) {
-          const isTargetRole = roleText.toLowerCase().includes(role.toLowerCase().split(' ')[0]);
-          if (isTargetRole) {
-            data.targetRoleSalaries.push({
-              company: companyName,
-              role: roleText,
-              base,
-              totalComp: total || base,
-              location,
-            });
-          }
-        }
+  // Search Google News for salary articles mentioning the company/role
+  const newsQuery = `${role} ${location} salary compensation 2024 2025`;
+  const newsRss = `https://news.google.com/rss/search?q=${encodeURIComponent(newsQuery)}&hl=en-US&gl=US&ceid=US:en`;
+  const newsXml = await fetchHtml(newsRss);
+  if (newsXml) {
+    const $n = cheerio.load(newsXml, { xmlMode: true });
+    $n('item').each((_, el) => {
+      const desc = $n(el).find('description').text().replace(/<[^>]*>/g, '');
+      const title = $n(el).find('title').text();
+      const link = $n(el).find('link').text().trim() || $n(el).find('guid').text().trim();
+      const salaries = extractSalaries(`${title} ${desc}`);
+      if (salaries.length > 0 && data.comparableSalaries.length < 6) {
+        const avg = Math.round(salaries.reduce((a, b) => a + b, 0) / salaries.length);
+        const source = $n(el).find('source').text().trim() || 'News';
+        data.comparableSalaries.push({ company: source, base: avg, totalComp: Math.round(avg * 1.3) });
+      }
+      if (link && data.comparableSalaries.length > 0) {
+        sources.push({ url: link, type: 'levels', title: title.slice(0, 80), timestamp: new Date().toISOString() });
       }
     });
+  }
 
-    // Try to scrape comparable company data
-    const compareUrl = `https://www.levels.fyi/salary/${encodeURIComponent(role)}/`;
-    const compareHtml = await fetchHtml(compareUrl);
-    if (compareHtml) {
-      const $2 = cheerio.load(compareHtml);
-      $2('table tbody tr').each((_, el) => {
-        const cells = $2(el).find('td');
-        if (cells.length >= 3) {
-          const comp = $2(cells[0]).text().trim();
-          const base = parseInt($2(cells[1]).text().trim().replace(/[^0-9]/g, ''));
-          const total = parseInt($2(cells[2]).text().trim().replace(/[^0-9]/g, ''));
-          if (comp && !isNaN(base) && base > 0) {
-            data.comparableSalaries.push({ company: comp, base, totalComp: total || base });
-          }
-        }
-      });
-
-      sources.push({
-        url: compareUrl,
-        type: 'levels',
-        title: `${role} Salaries - Levels.fyi`,
-        timestamp: new Date().toISOString(),
-      });
-    }
+  // Second DuckDuckGo search for broader market comps
+  const marketQuery = `${role} average salary ${location} site:salary.com OR site:glassdoor.com OR site:builtin.com`;
+  const ddg2Html = await fetchHtml(
+    `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(marketQuery)}`,
+    { Referer: 'https://lite.duckduckgo.com/' }
+  );
+  if (ddg2Html && ddg2Html.length > 1000) {
+    const $d = cheerio.load(ddg2Html);
+    $d('a[href^="http"]').each((_, el) => {
+      const href = $d(el).attr('href') || '';
+      const snippet = $d(el).closest('tr').next('tr').text().trim();
+      const salaries = extractSalaries(snippet);
+      if (salaries.length > 0 && data.comparableSalaries.length < 8) {
+        const avg = Math.round(salaries.reduce((a, b) => a + b, 0) / salaries.length);
+        const compName = href.match(/(?:salary\.com|glassdoor\.com|builtin\.com)/)?.[0] || 'Market data';
+        data.comparableSalaries.push({ company: compName, base: avg, totalComp: Math.round(avg * 1.3) });
+        sources.push({ url: href, type: 'levels', title: `${role} Market Salary`, timestamp: new Date().toISOString() });
+      }
+    });
   }
 
   return { data, sources };
