@@ -42,14 +42,16 @@ export async function scrapeGoogleNews(
   const sources: ScrapedSource[] = [];
 
   const queries = [
-    `${companyName} layoffs OR scandal OR lawsuit OR funding OR leadership OR acquisition OR pivot OR CEO OR executives`,
-    `${companyName} review OR culture OR employees OR toxic OR "great place to work"`,
-    `${companyName} salary OR compensation OR pay OR raise OR bonus`,
-    `${companyName} interview OR hiring OR fired OR laid off OR restructuring`,
-    `${companyName} remote work OR "return to office" OR "work from home" OR RTO`,
-    `${companyName} CEO leadership executive news`,
-    `${companyName} revenue earnings profit quarterly results`,
-    `${companyName} funding raised series investment valuation`,
+    `${companyName} layoffs OR "reduction in force" OR restructuring OR acquisition OR pivot`,
+    `${companyName} CEO OR executives OR leadership OR "executive departure" OR resignation`,
+    `${companyName} culture OR employees OR toxic OR "great place to work" OR reviews`,
+    `${companyName} salary OR compensation OR pay OR raise OR bonus OR "pay cut"`,
+    `${companyName} interview OR hiring OR "laid off" OR fired OR downsizing`,
+    `${companyName} revenue OR earnings OR profit OR "quarterly results" OR IPO OR valuation`,
+    `${companyName} funding OR "series A" OR "series B" OR "series C" OR investment OR "raised"`,
+    `${companyName} "press release" OR announcement OR partnership OR product OR expansion`,
+    `${companyName} lawsuit OR regulatory OR investigation OR fine OR SEC OR DOJ`,
+    `${companyName} "return to office" OR RTO OR remote OR "work from home" OR hybrid`,
   ];
 
   for (const q of queries) {
@@ -87,6 +89,40 @@ export async function scrapeGoogleNews(
 }
 
 // ── REDDIT ───────────────────────────────────────────────────────────────────
+// Reddit's JSON API blocks Vercel/datacenter IPs. We search DuckDuckGo for
+// reddit.com results instead — same threads, not IP-blocked.
+function parseRedditFromDDG(html: string, seen: Set<string>, threads: RedditThread[], sources: ScrapedSource[]) {
+  const $ = cheerio.load(html);
+  $('a[href*="reddit.com/r/"]').each((_, el) => {
+    const href = $(el).attr('href') || '';
+    if (!href.includes('/comments/')) return;
+    // Clean up DDG redirect wrapping if present
+    let threadUrl = href.startsWith('http') ? href : `https://${href.replace(/^\/\//, '')}`;
+    try { threadUrl = new URL(threadUrl).href; } catch { return; }
+    if (seen.has(threadUrl)) return;
+    seen.add(threadUrl);
+
+    const title = $(el).text().trim();
+    if (!title || title.length < 5) return;
+
+    // Snippet is in the next sibling row/cell in DDG Lite
+    const snippet = $(el).closest('tr').next('tr').find('td').text().trim() ||
+                    $(el).parent().next().text().trim();
+
+    const subredditM = threadUrl.match(/reddit\.com\/r\/([^/]+)/);
+    threads.push({
+      title: title.slice(0, 200),
+      url: threadUrl,
+      subreddit: subredditM?.[1] || 'reddit',
+      score: 0,
+      commentCount: 0,
+      topComments: snippet ? [snippet.slice(0, 400)] : [],
+      body: snippet?.slice(0, 400),
+    });
+    sources.push({ url: threadUrl, type: 'reddit', title: title.slice(0, 120), timestamp: new Date().toISOString() });
+  });
+}
+
 export async function scrapeReddit(
   companyName: string,
   role: string
@@ -95,45 +131,45 @@ export async function scrapeReddit(
   const sources: ScrapedSource[] = [];
   const seen = new Set<string>();
 
-  // Run 4 focused all-Reddit searches — avoids per-subreddit loop which always times out
+  // Search DuckDuckGo for Reddit threads — avoids Reddit's datacenter IP block
   const queries = [
-    companyName,
-    `${companyName} ${role}`.slice(0, 80),
-    `${companyName} salary compensation`,
-    `${companyName} layoffs culture interview`,
+    `site:reddit.com "${companyName}" employees culture work`,
+    `site:reddit.com "${companyName}" ${role} salary compensation`,
+    `site:reddit.com "${companyName}" layoffs interview hiring`,
+    `site:reddit.com "${companyName}" toxic management work life balance`,
+    `site:reddit.com "${companyName}" career advice joining worth it`,
   ];
 
   for (const q of queries) {
-    const url = `https://www.reddit.com/search.json?q=${encodeURIComponent(q)}&sort=top&limit=25&t=year`;
-    try {
-      const res = await axios.get(url, {
-        headers: { ...HEADERS, Accept: 'application/json' },
-        timeout: 7000,
+    const ddgHtml = await fetchHtml(
+      `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(q)}`,
+      { Referer: 'https://lite.duckduckgo.com/' }
+    );
+    if (ddgHtml && ddgHtml.length > 1000) {
+      parseRedditFromDDG(ddgHtml, seen, threads, sources);
+    }
+  }
+
+  // Also try Google News RSS for Reddit threads (surfaces highly-upvoted posts)
+  const gnQuery = `${companyName} site:reddit.com`;
+  const gnXml = await fetchHtml(
+    `https://news.google.com/rss/search?q=${encodeURIComponent(gnQuery)}&hl=en-US&gl=US&ceid=US:en`
+  );
+  if (gnXml) {
+    const $rss = cheerio.load(gnXml, { xmlMode: true });
+    $rss('item').each((_, el) => {
+      const link = $rss(el).find('link').text().trim() || $rss(el).find('guid').text().trim();
+      const title = $rss(el).find('title').text().trim();
+      if (!link.includes('reddit.com') || seen.has(link)) return;
+      seen.add(link);
+      const subredditM = link.match(/reddit\.com\/r\/([^/]+)/);
+      threads.push({
+        title, url: link,
+        subreddit: subredditM?.[1] || 'reddit',
+        score: 0, commentCount: 0, topComments: [], body: '',
       });
-      const posts = res.data?.data?.children || [];
-      for (const post of posts) {
-        const p = post.data;
-        if (!p?.title) continue;
-        const threadUrl = `https://www.reddit.com${p.permalink}`;
-        if (seen.has(threadUrl)) continue;
-        seen.add(threadUrl);
-        threads.push({
-          title: p.title,
-          url: threadUrl,
-          subreddit: p.subreddit,
-          score: p.score || 0,
-          commentCount: p.num_comments || 0,
-          topComments: [],
-          body: p.selftext?.slice(0, 500),
-        });
-        sources.push({
-          url: threadUrl,
-          type: 'reddit',
-          title: p.title,
-          timestamp: new Date((p.created_utc || 0) * 1000).toISOString(),
-        });
-      }
-    } catch { /* skip failed query */ }
+      sources.push({ url: link, type: 'reddit', title: title.slice(0, 120), timestamp: new Date().toISOString() });
+    });
   }
 
   return { threads: threads.slice(0, 60), sources };
