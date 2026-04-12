@@ -18,8 +18,10 @@ export default function HomePage() {
     jobText: '',
     companyName: '',
     location: '',
-    salaryMin: '',
-    salaryMax: '',
+    postedSalaryMin: '',
+    postedSalaryMax: '',
+    desiredSalaryMin: '',
+    desiredSalaryMax: '',
     offerText: '',
   });
   const [showOffer, setShowOffer] = useState(false);
@@ -37,19 +39,23 @@ export default function HomePage() {
 
     if (!form.companyName.trim()) { setError('Company name is required'); return; }
     if (!form.location.trim()) { setError('Location is required'); return; }
-    if (!form.salaryMin || !form.salaryMax) { setError('Salary range is required'); return; }
+    if (!form.desiredSalaryMin || !form.desiredSalaryMax) { setError('Desired salary range is required'); return; }
     if (tab === 'url' && !form.jobUrl.trim()) { setError('Job posting URL is required'); return; }
     if (tab === 'paste' && !form.jobText.trim()) { setError('Job posting text is required'); return; }
 
     setLoading(true);
+
+    const toNum = (s: string) => { const n = parseInt(s.replace(/[^0-9]/g, '')); return isNaN(n) ? undefined : n; };
 
     const request = {
       jobUrl: tab === 'url' ? form.jobUrl : undefined,
       jobText: tab === 'paste' ? form.jobText : undefined,
       companyName: form.companyName,
       location: form.location,
-      salaryMin: parseInt(form.salaryMin.replace(/[^0-9]/g, '')),
-      salaryMax: parseInt(form.salaryMax.replace(/[^0-9]/g, '')),
+      postedSalaryMin: toNum(form.postedSalaryMin),
+      postedSalaryMax: toNum(form.postedSalaryMax),
+      desiredSalaryMin: toNum(form.desiredSalaryMin)!,
+      desiredSalaryMax: toNum(form.desiredSalaryMax)!,
       offerText: form.offerText || undefined,
     };
 
@@ -191,31 +197,55 @@ export default function HomePage() {
                 </div>
               </div>
 
-              {/* Salary range */}
+              {/* Posted salary — optional */}
               <div>
-                <label className="block text-xs font-medium text-[#8892a4] mb-1.5 uppercase tracking-wide">Target salary range</label>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[#8892a4] text-sm">$</span>
-                    <input
-                      type="text"
-                      value={form.salaryMin}
-                      onChange={e => setForm(f => ({ ...f, salaryMin: formatSalary(e.target.value) }))}
-                      placeholder="120,000"
-                      className="w-full bg-[#0d1117] border border-[#1e2736] rounded-xl pl-7 pr-4 py-3 text-sm text-white placeholder-[#4a5568] focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30 transition-colors"
-                    />
-                  </div>
-                  <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[#8892a4] text-sm">$</span>
-                    <input
-                      type="text"
-                      value={form.salaryMax}
-                      onChange={e => setForm(f => ({ ...f, salaryMax: formatSalary(e.target.value) }))}
-                      placeholder="160,000"
-                      className="w-full bg-[#0d1117] border border-[#1e2736] rounded-xl pl-7 pr-4 py-3 text-sm text-white placeholder-[#4a5568] focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30 transition-colors"
-                    />
-                  </div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-medium text-[#8892a4] uppercase tracking-wide">
+                    Salary listed in posting
+                  </label>
+                  <span className="text-[10px] text-[#4a5568]">Optional — leave blank if not listed</span>
                 </div>
+                <div className="grid grid-cols-2 gap-3">
+                  {(['postedSalaryMin', 'postedSalaryMax'] as const).map((field, i) => (
+                    <div key={field} className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[#8892a4] text-sm">$</span>
+                      <input
+                        type="text"
+                        value={form[field]}
+                        onChange={e => setForm(f => ({ ...f, [field]: formatSalary(e.target.value) }))}
+                        placeholder={i === 0 ? '80,000' : '100,000'}
+                        className="w-full bg-[#0d1117] border border-[#1e2736] rounded-xl pl-7 pr-4 py-3 text-sm text-white placeholder-[#4a5568] focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30 transition-colors"
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Desired salary — required */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-medium text-[#8892a4] uppercase tracking-wide">
+                    Your desired salary range
+                  </label>
+                  <span className="text-[10px] text-amber-500/70">Required</span>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  {(['desiredSalaryMin', 'desiredSalaryMax'] as const).map((field, i) => (
+                    <div key={field} className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[#8892a4] text-sm">$</span>
+                      <input
+                        type="text"
+                        value={form[field]}
+                        onChange={e => setForm(f => ({ ...f, [field]: formatSalary(e.target.value) }))}
+                        placeholder={i === 0 ? '120,000' : '150,000'}
+                        className="w-full bg-[#0d1117] border border-indigo-500/20 rounded-xl pl-7 pr-4 py-3 text-sm text-white placeholder-[#4a5568] focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30 transition-colors"
+                      />
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[11px] text-[#4a5568] mt-1.5">
+                  We&apos;ll tell you if this is realistic — and what leverage you actually have.
+                </p>
               </div>
 
               {/* Optional offer */}

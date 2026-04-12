@@ -57,11 +57,19 @@ export async function POST(req: NextRequest) {
       severity: fp.severity as 'red' | 'yellow' | 'grey',
     }));
 
-  const systemPrompt = `You are a brutally honest career intelligence analyst. Give candidates information companies already have but candidates don't. Never soften bad news. Call out red flags plainly. Give genuine credit where deserved. Sound like advice from a brilliant friend in recruiting — honest, specific, immediately actionable. Never say "cannot determine" or "data unavailable" — always synthesize from whatever data IS available across all sources. If direct data is missing, reason from the news, Reddit, and Glassdoor signals you do have.`;
+  const systemPrompt = `You are a brutally honest career intelligence analyst. Give candidates information companies already have but candidates don't. Never soften bad news. Call out red flags plainly. Give genuine credit where deserved. Sound like advice from a brilliant friend in recruiting — honest, specific, immediately actionable.
+
+FORMATTING RULES — strictly follow these:
+- All text fields (companyIntelligence, roleIntelligence, salaryAnalysis, offerAnalysis) must use short paragraphs of 2-3 sentences max, separated by blank lines. Use **bold** for key facts and numbers. Use bullet points (starting with •) for lists of 3+ items. Never write a wall of unbroken text.
+- Never say "cannot determine", "data unavailable", or "insufficient data". Always reason from the signals you have.
+- All numeric fields in the JSON (radar scores, salary figures, percentiles) must be grounded in the actual scraped data provided. Do not invent numbers. If Glassdoor returned a 3.8 rating, use it. If BLS median is $112,000, use it. If you have no hard number, estimate conservatively and note it is an estimate in the text field, not in the numeric field.
+- Radar scores must reflect the actual data: low Glassdoor rating = low culture score, layoff signals = low financial stability, etc. Do not default everything to 5.
+- Salary intelligence figures must be derived from BLS and Levels.fyi data provided. Do not fabricate ranges.`;
 
   const userPrompt = `Analyze this job opportunity. Be specific. Use real numbers. Never write "data unavailable" — always reason from available signals.
 
-CANDIDATE: Location: ${request.location} | Target salary: $${request.salaryMin?.toLocaleString()}–$${request.salaryMax?.toLocaleString()}
+CANDIDATE: Location: ${request.location}
+Desired salary: $${request.desiredSalaryMin?.toLocaleString()}–$${request.desiredSalaryMax?.toLocaleString()}${request.postedSalaryMin ? `\nPosted salary in listing: $${request.postedSalaryMin?.toLocaleString()}–$${request.postedSalaryMax?.toLocaleString()} — analyze whether this range is a lowball anchor or fair` : '\nPosted salary: not listed in the posting'}
 
 JOB POSTING:
 ${jobText.slice(0, 2500)}
@@ -178,7 +186,7 @@ Return ONLY valid JSON, no markdown fences, no text outside the JSON object:
           parsed = buildFallback(request, scrapedData);
         }
 
-        const targetSalary = ((request.salaryMin ?? 0) + (request.salaryMax ?? 0)) / 2;
+        const targetSalary = ((request.desiredSalaryMin ?? 0) + (request.desiredSalaryMax ?? 0)) / 2;
 
         const result = {
           id: Math.random().toString(36).slice(2, 10),
@@ -233,7 +241,7 @@ function buildFallback(
   scrapedData: { bls: BLSData; glassdoor: GlassdoorData },
 ): Record<string, unknown> {
   const median = scrapedData.bls?.medianSalary ?? 90000;
-  const mid = ((request.salaryMin ?? 0) + (request.salaryMax ?? 0)) / 2;
+  const mid = ((request.desiredSalaryMin ?? 0) + (request.desiredSalaryMax ?? 0)) / 2;
   const pct = Math.min(99, Math.max(1, Math.round(50 + ((mid - median) / median) * 30)));
   return {
     verdict: 'PROCEED WITH CAUTION',
@@ -265,7 +273,7 @@ function buildFallback(
     negotiationPlaybook: null,
     companyIntelligence: `Limited automated data was returned for ${request.companyName}. Search Glassdoor, LinkedIn, and Blind manually for current employee sentiment.`,
     roleIntelligence: 'Verify the scope and seniority of this role against comparable postings at similar companies.',
-    salaryAnalysis: `BLS median for this occupation type is $${median.toLocaleString()}. Your target range of $${request.salaryMin?.toLocaleString()}–$${request.salaryMax?.toLocaleString()} places you at approximately the ${pct}th percentile.`,
+    salaryAnalysis: `BLS median for this occupation type is $${median.toLocaleString()}. Your desired range of $${request.desiredSalaryMin?.toLocaleString()}–$${request.desiredSalaryMax?.toLocaleString()} places you at approximately the ${pct}th percentile.`,
     offerAnalysis: null,
   };
 }

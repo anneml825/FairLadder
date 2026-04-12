@@ -3,8 +3,12 @@ export interface AnalysisRequest {
   jobText?: string;
   companyName: string;
   location: string;
-  salaryMin: number;
-  salaryMax: number;
+  // What the posting advertises (optional — many jobs don't list it)
+  postedSalaryMin?: number;
+  postedSalaryMax?: number;
+  // What the candidate wants
+  desiredSalaryMin: number;
+  desiredSalaryMax: number;
   offerText?: string;
 }
 

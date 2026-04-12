@@ -52,7 +52,7 @@ export async function runClaudeAnalysis(
 
 CANDIDATE CONTEXT:
 - Location: ${request.location}
-- Target salary range: $${request.salaryMin.toLocaleString()} - $${request.salaryMax.toLocaleString()}
+- Target salary range: $${request.desiredSalaryMin?.toLocaleString()} - $${request.desiredSalaryMax?.toLocaleString()}
 
 JOB POSTING TEXT:
 ${jobText.slice(0, 3000)}
@@ -276,7 +276,7 @@ Return ONLY valid JSON. No markdown. No explanation outside the JSON.`;
     },
     salaryIntelligence: {
       ...((analysis.salaryIntelligence as AnalysisResult['salaryIntelligence']) || {}),
-      targetSalary: (request.salaryMin + request.salaryMax) / 2,
+      targetSalary: ((request.desiredSalaryMin ?? 0) + (request.desiredSalaryMax ?? 0)) / 2,
     } as AnalysisResult['salaryIntelligence'],
     timeline: (analysis.timeline as AnalysisResult['timeline']) || [],
     redFlags: (analysis.redFlags as AnalysisResult['redFlags']) || [],
@@ -307,7 +307,7 @@ function getFallbackAnalysis(request: AnalysisRequest, scrapedData: {
   glassdoor: GlassdoorData;
 }): string {
   const median = scrapedData.bls.medianSalary || 85000;
-  const targetMid = (request.salaryMin + request.salaryMax) / 2;
+  const targetMid = ((request.desiredSalaryMin ?? 0) + (request.desiredSalaryMax ?? 0)) / 2;
   const percentile = Math.min(99, Math.max(1, Math.round(50 + ((targetMid - median) / median) * 30)));
 
   return JSON.stringify({
@@ -358,7 +358,7 @@ function getFallbackAnalysis(request: AnalysisRequest, scrapedData: {
     negotiationPlaybook: null,
     companyIntelligence: 'Limited data was returned for this company. Research independently on Glassdoor, LinkedIn, and industry forums before proceeding.',
     roleIntelligence: 'Verify the role requirements and responsibilities match your experience level and career goals.',
-    salaryAnalysis: `Based on BLS data, the median salary for this occupation is $${median.toLocaleString()}. Your target range of $${request.salaryMin.toLocaleString()}-$${request.salaryMax.toLocaleString()} should be benchmarked against current market data.`,
+    salaryAnalysis: `Based on BLS data, the median salary for this occupation is $${median.toLocaleString()}. Your target range of $${request.desiredSalaryMin?.toLocaleString()}-$${request.desiredSalaryMax?.toLocaleString()} should be benchmarked against current market data.`,
     offerAnalysis: null,
   });
 }
