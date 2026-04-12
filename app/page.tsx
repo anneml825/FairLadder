@@ -104,16 +104,13 @@ export default function HomePage() {
         {/* Headline */}
         <h1 className="text-center font-bold leading-tight mb-4 max-w-3xl">
           <span className="block text-5xl sm:text-6xl md:text-7xl text-white tracking-tight">
-            Know what they
-          </span>
-          <span className="block text-5xl sm:text-6xl md:text-7xl gradient-text tracking-tight">
-            know about you.
+            Know what they know.
           </span>
         </h1>
 
-        <p className="text-center text-[#8892a4] text-lg max-w-xl mb-12 leading-relaxed">
-          Companies have recruiters, data teams, and salary analytics. You have a job description and a gut feeling.
-          <strong className="text-white"> We fix that.</strong>
+        <p className="text-center text-[#8892a4] text-lg max-w-2xl mb-12 leading-relaxed">
+          Companies have recruiters, compensation analysts, and years of hiring data. You have a job description and a gut feeling.
+          <strong className="text-white"> Not anymore.</strong>
         </p>
 
         {/* Form card */}
@@ -261,7 +258,7 @@ export default function HomePage() {
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                     </svg>
-                    Starting analysis...
+                    Running analysis...
                   </>
                 ) : (
                   <>
@@ -274,24 +271,24 @@ export default function HomePage() {
               </button>
 
               <p className="text-center text-xs text-[#4a5568]">
-                Analysis takes 30–60 seconds · Scans 40+ sources · No API keys required
+                Analysis takes 60 seconds · Pulls from thousands of live data points · Built for candidates, never employers
               </p>
             </form>
           </div>
         </div>
 
-        {/* How it works */}
+        {/* What we uncover */}
         <section id="how" className="w-full max-w-4xl mt-24 px-4">
-          <h2 className="text-center text-2xl font-bold text-white mb-2">What we analyze</h2>
-          <p className="text-center text-[#8892a4] text-sm mb-12">Every analysis scrapes dozens of live sources in real time</p>
+          <h2 className="text-center text-2xl font-bold text-white mb-2">What we uncover</h2>
+          <p className="text-center text-[#8892a4] text-sm mb-12">Every analysis runs live — nothing cached, nothing generic</p>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {[
-              { icon: '📰', title: 'Google News', desc: '12 months of company news — layoffs, lawsuits, pivots, leadership changes' },
-              { icon: '🗣️', title: 'Reddit Intelligence', desc: 'Real employee and candidate discussions across 12+ subreddits' },
-              { icon: '⭐', title: 'Glassdoor Deep Dive', desc: 'Rating trends, CEO approval, real review themes, interview data' },
-              { icon: '💰', title: 'Salary Benchmarking', desc: 'Levels.fyi + BLS data — where your offer really sits in the market' },
-              { icon: '📋', title: 'SEC Filing Analysis', desc: 'Material events, executive departures, financial distress signals' },
-              { icon: '🤖', title: 'Claude AI Analysis', desc: 'Brutally honest synthesis — what it all means for you specifically' },
+              { icon: '📰', title: 'Company News', desc: '12 months of headlines — layoffs, lawsuits, leadership exits, and anything else that changes the picture before you walk in' },
+              { icon: '🗣️', title: 'What Employees Actually Say', desc: 'Real discussions from Reddit and career communities — not the polished reviews, the unfiltered ones' },
+              { icon: '⭐', title: 'Glassdoor Intelligence', desc: 'Rating trends over time, CEO approval, recurring themes in reviews, and what candidates experienced in the interview process' },
+              { icon: '💰', title: 'Salary Reality Check', desc: 'Where your offer actually sits in the market — by role, level, and location — not what the company wants you to believe is competitive' },
+              { icon: '📋', title: 'Financial Health Signals', desc: 'SEC filings, executive departures, material events — signals that tell you whether this company looks different in 18 months' },
+              { icon: '🤖', title: 'Your Verdict', desc: 'Everything synthesized into one honest assessment — red flags ranked, negotiation leverage identified, plain English bottom line' },
             ].map(item => (
               <div key={item.title} className="glass rounded-xl p-4 border border-[#1e2736] hover:border-indigo-500/20 transition-colors">
                 <div className="text-2xl mb-2">{item.icon}</div>
@@ -305,9 +302,9 @@ export default function HomePage() {
         {/* Stats */}
         <div className="mt-16 flex flex-wrap gap-8 sm:gap-16 justify-center text-center">
           {[
-            { value: '40+', label: 'Sources per analysis' },
-            { value: '$0', label: 'APIs used — pure scraping' },
-            { value: '100%', label: 'Candidate-first design' },
+            { value: '5,000+', label: 'Data points per analysis' },
+            { value: '60 seconds', label: 'From submission to full intelligence' },
+            { value: '100% candidate-side', label: 'Built for you — never the employer' },
           ].map(stat => (
             <div key={stat.label}>
               <div className="text-3xl font-bold gradient-text">{stat.value}</div>
