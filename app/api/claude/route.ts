@@ -13,19 +13,54 @@ import {
 
 export const runtime = 'edge';
 
-const FLAG_PHRASES = [
-  { phrase: 'wear many hats', explanation: 'Code for understaffed — one person doing multiple jobs without additional pay.', severity: 'yellow' },
-  { phrase: 'fast paced', explanation: 'Often signals poor planning, constant firefighting, and unsustainable workloads.', severity: 'yellow' },
-  { phrase: 'like a family', explanation: 'Classic manipulation tactic — implies loyalty expectations while obscuring poor work-life boundaries.', severity: 'red' },
-  { phrase: 'unlimited pto', explanation: 'Studies consistently show employees take less PTO with this policy. Often no real time-off culture.', severity: 'red' },
-  { phrase: 'self starter', explanation: 'May mean minimal onboarding, no mentorship, and you\'ll be left to sink or swim from day one.', severity: 'yellow' },
-  { phrase: 'rockstar', explanation: 'Signals immature hiring culture and unrealistic expectations.', severity: 'yellow' },
-  { phrase: 'ninja', explanation: 'Same as rockstar. A word that tells you a lot about the culture before you even walk in.', severity: 'yellow' },
-  { phrase: 'hustle', explanation: 'Glorification of overwork. Expect long hours as a cultural expectation, not exception.', severity: 'red' },
-  { phrase: 'entrepreneurial spirit', explanation: 'Likely means startup-level workload for corporate-level accountability with no equity upside.', severity: 'yellow' },
-  { phrase: 'dynamic environment', explanation: 'Often means disorganized, constantly shifting priorities, and leadership that can\'t hold a direction.', severity: 'yellow' },
-  { phrase: 'results driven', explanation: 'Vague metric-speak that can justify any demand on your time.', severity: 'grey' },
-  { phrase: 'comfortable with ambiguity', explanation: 'Role is likely poorly defined. You may be set up to fail against goals never clearly established.', severity: 'yellow' },
+// Each entry can be a plain string (exact) or a regex pattern (flexible matching).
+// Normalized job text has hyphens replaced with spaces before matching.
+const FLAG_PHRASES: Array<{ phrase: string; pattern?: RegExp; explanation: string; severity: string }> = [
+  // ── PACE / URGENCY ───────────────────────────────────────────────────────
+  { phrase: 'fast paced', pattern: /fast.?paced/i, explanation: 'Often signals poor planning, constant firefighting, and workloads that erode quality of life within months.', severity: 'yellow' },
+  { phrase: 'move fast', explanation: 'Pace-worship culture. Expect decisions made without enough information and cleanup work that never gets prioritized.', severity: 'yellow' },
+  { phrase: 'sense of urgency', explanation: 'Everything is urgent — which means nothing is actually prioritized. Expect chronic pressure and unclear triage.', severity: 'yellow' },
+  { phrase: 'high velocity', explanation: 'Sounds exciting. Means you\'ll be moving too fast to do things right, and the technical debt is someone else\'s problem.', severity: 'yellow' },
+  { phrase: 'hit the ground running', explanation: 'There is no onboarding. You\'re expected to be productive on day one with no ramp time built in.', severity: 'yellow' },
+  { phrase: 'aggressive timeline', explanation: 'Deadlines were set before the work was scoped. Expect crunch and broken promises to clients or leadership.', severity: 'red' },
+  { phrase: 'deadline-driven', pattern: /deadline.?driven/i, explanation: 'Perpetual deadline pressure is the norm here, not the exception.', severity: 'yellow' },
+
+  // ── WORKLOAD / UNDERSTAFFING ─────────────────────────────────────────────
+  { phrase: 'wear many hats', explanation: 'Code for understaffed — one person doing multiple jobs without additional pay or title.', severity: 'yellow' },
+  { phrase: 'roll up your sleeves', explanation: 'Management will delegate down. Expect senior people doing junior work when things get tight.', severity: 'yellow' },
+  { phrase: 'do more with less', explanation: 'Budget is being cut or has already been cut. Headcount will not grow to match workload.', severity: 'red' },
+  { phrase: 'self starter', pattern: /self.?starter/i, explanation: 'Minimal onboarding, no mentorship. You\'ll be left to sink or swim from day one with no structured support.', severity: 'yellow' },
+  { phrase: 'multitasking', explanation: 'The role is too broad for one person. Being good at multitasking doesn\'t make this less exhausting.', severity: 'yellow' },
+  { phrase: 'above and beyond', explanation: 'Unpaid overtime is an expectation, not a rarity. "Going above and beyond" will be the baseline.', severity: 'red' },
+  { phrase: 'bandwidth', explanation: 'You will be at capacity constantly. "Bandwidth" is corporate for "we need more from you."', severity: 'grey' },
+
+  // ── CULTURE RED FLAGS ────────────────────────────────────────────────────
+  { phrase: 'like a family', pattern: /like a family|we are a family|we\'re a family/i, explanation: 'Classic manipulation tactic — implies loyalty expectations while obscuring poor work-life boundaries.', severity: 'red' },
+  { phrase: 'hustle', explanation: 'Glorification of overwork. Long hours are a cultural expectation, not an exception.', severity: 'red' },
+  { phrase: 'entrepreneurial spirit', explanation: 'Startup-level workload for corporate-level accountability — with no equity upside.', severity: 'yellow' },
+  { phrase: 'startup culture', explanation: 'Unpredictable hours, unclear roles, and frequent pivots — often with below-market comp justified by "the experience."', severity: 'yellow' },
+  { phrase: 'we work hard and play hard', explanation: 'The "play hard" part is optional. The "work hard" part is mandatory and tracked.', severity: 'red' },
+  { phrase: 'high performers', explanation: 'Coded language for a competitive internal culture where average performers are quietly managed out.', severity: 'yellow' },
+  { phrase: 'rockstar', explanation: 'Signals immature hiring culture and wildly unrealistic expectations.', severity: 'yellow' },
+  { phrase: 'ninja', explanation: 'Same signal as rockstar. Tells you how seriously leadership thinks about talent before you walk in.', severity: 'yellow' },
+  { phrase: 'guru', explanation: 'Vague, flattering title used to dress up scope creep and unrealistic expectations.', severity: 'yellow' },
+  { phrase: 'passionate', explanation: 'Passion rhetoric is used to justify below-market pay. "If you really care, you won\'t negotiate."', severity: 'grey' },
+  { phrase: 'mission-driven', explanation: 'The mission may be used to explain why compensation is below market. Ask specifically about pay bands.', severity: 'grey' },
+
+  // ── ROLE DEFINITION / STRUCTURE ──────────────────────────────────────────
+  { phrase: 'dynamic environment', explanation: 'Disorganized, constantly shifting priorities, and leadership that can\'t hold a direction for more than a quarter.', severity: 'yellow' },
+  { phrase: 'comfortable with ambiguity', explanation: 'Role is poorly defined. You may be set up to fail against goals that were never clearly established.', severity: 'yellow' },
+  { phrase: 'results driven', pattern: /results.?driven/i, explanation: 'Vague metric-speak that can justify any demand on your time without clear success criteria.', severity: 'grey' },
+  { phrase: 'flat organization', explanation: 'No promotion path. "Flat" often means your only growth option is to leave.', severity: 'yellow' },
+  { phrase: 'take ownership', explanation: 'You\'ll be accountable for outcomes you don\'t fully control, with authority that doesn\'t match responsibility.', severity: 'yellow' },
+  { phrase: 'own the', explanation: 'Same as "take ownership" — high accountability baked into vague scope.', severity: 'grey' },
+  { phrase: 'cross-functional', explanation: 'You\'ll spend significant time navigating organizational politics and competing priorities across teams.', severity: 'grey' },
+
+  // ── COMPENSATION / PTO ───────────────────────────────────────────────────
+  { phrase: 'unlimited pto', explanation: 'Research consistently shows employees take less time off with this policy. There is often no real time-off culture.', severity: 'red' },
+  { phrase: 'competitive salary', explanation: '"Competitive" is undefined. Ask for a specific band before investing time in the process.', severity: 'grey' },
+  { phrase: 'competitive compensation', explanation: 'Same as "competitive salary" — requires you to define what competitive means to you before engaging.', severity: 'grey' },
+  { phrase: 'equity upside', explanation: 'Private company equity is often worth less than presented. Ask about liquidation preferences, vesting cliff, and last 409A.', severity: 'grey' },
 ];
 
 interface ClaudeRequestBody {
@@ -47,10 +82,11 @@ export async function POST(req: NextRequest) {
   const { request, scrapedData, sources } = body;
 
   const jobText = request.jobText || scrapedData.jobPosting?.fullText || 'Not provided';
-  const jobFullText = jobText.toLowerCase();
+  // Normalize hyphens → spaces so "fast-paced" matches "fast paced"
+  const jobFullText = jobText.toLowerCase().replace(/-/g, ' ');
 
   const languageWarnings = FLAG_PHRASES
-    .filter(fp => jobFullText.includes(fp.phrase))
+    .filter(fp => fp.pattern ? fp.pattern.test(jobFullText) : jobFullText.includes(fp.phrase))
     .map(fp => ({
       phrase: fp.phrase,
       explanation: fp.explanation,

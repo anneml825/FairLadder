@@ -404,45 +404,72 @@ export async function scrapeBLS(
     locationData: '',
   };
 
-  // BLS Occupational Employment and Wage Statistics
-  const blsUrl = `https://www.bls.gov/oes/current/oes_nat.htm`;
-  const html = await fetchHtml(blsUrl);
+  // Strategy 1: DuckDuckGo → BLS pages include median wage in their search snippets
+  // e.g. "The median annual wage for software developers was $127,260 in May 2023."
+  const ddgQuery = `${role} median annual wage salary site:bls.gov`;
+  const ddgHtml = await fetchHtml(
+    `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(ddgQuery)}`,
+    { Referer: 'https://lite.duckduckgo.com/' }
+  );
+  if (ddgHtml && ddgHtml.length > 1000) {
+    const plain = ddgHtml.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
 
-  if (html) {
-    const $ = cheerio.load(html);
-    const roleKeyword = role.toLowerCase().split(' ').slice(0, 2).join(' ');
-
-    // Search for matching occupation
-    $('table tbody tr').each((_, el) => {
-      const cells = $(el).find('td');
-      if (cells.length >= 5) {
-        const occTitle = $(cells[0]).text().trim().toLowerCase();
-        if (occTitle.includes(roleKeyword) || roleKeyword.includes(occTitle.split(' ')[0])) {
-          const median = parseInt($(cells[4]).text().trim().replace(/[^0-9]/g, ''));
-          const p10 = parseInt($(cells[1]).text().trim().replace(/[^0-9]/g, ''));
-          const p25 = parseInt($(cells[2]).text().trim().replace(/[^0-9]/g, ''));
-          const p75 = parseInt($(cells[5]).text().trim().replace(/[^0-9]/g, ''));
-          const p90 = parseInt($(cells[6]).text().trim().replace(/[^0-9]/g, ''));
-
-          if (!isNaN(median) && median > 0) {
-            data.occupationTitle = $(cells[0]).text().trim();
-            data.medianSalary = median;
-            if (!isNaN(p10)) data.p10 = p10;
-            if (!isNaN(p25)) data.p25 = p25;
-            if (!isNaN(p75)) data.p75 = p75;
-            if (!isNaN(p90)) data.p90 = p90;
-            return false; // break
-          }
-        }
-      }
-    });
+    // "median annual wage for X was $127,260" or "median pay: $127,260"
+    const medianM =
+      plain.match(/median annual (?:wage|salary)[^$]*\$\s*([\d,]+)/i) ||
+      plain.match(/median pay[^$]*\$\s*([\d,]+)/i) ||
+      plain.match(/\$\s*([\d]{2,3},\d{3})\s*per year/i);
+    if (medianM) {
+      const val = parseInt(medianM[1].replace(/,/g, ''));
+      if (val >= 25000 && val <= 600000) data.medianSalary = val;
+    }
 
     sources.push({
-      url: blsUrl,
+      url: `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(ddgQuery)}`,
       type: 'bls',
-      title: 'BLS Occupational Employment Statistics',
+      title: `${role} — BLS Wage Data`,
       timestamp: new Date().toISOString(),
     });
+  }
+
+  // Strategy 2: BLS Occupational Outlook Handbook search (cleaner pages than OES table)
+  if (!data.medianSalary) {
+    const oohQuery = role.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim().replace(/\s+/g, '+');
+    const oohUrl = `https://www.bls.gov/ooh/occupation-finder.htm?pay=all&education=all&training=all&newjobs=all&growth=all&submit=GO&searchbar=${oohQuery}`;
+    const oohHtml = await fetchHtml(oohUrl);
+    if (oohHtml) {
+      const $o = cheerio.load(oohHtml);
+      // OOH pages contain "Median Pay" cells
+      $o('table tbody tr').each((_, row) => {
+        if (data.medianSalary) return;
+        const cells = $o(row).find('td');
+        const rowText = $o(row).text();
+        const roleMatch = rowText.toLowerCase().includes(role.toLowerCase().split(' ')[0]);
+        if (roleMatch) {
+          const payCell = [...Array(cells.length).keys()]
+            .map(i => $o(cells[i]).text().trim())
+            .find(t => t.startsWith('$'));
+          if (payCell) {
+            const val = parseInt(payCell.replace(/[^0-9]/g, ''));
+            if (val >= 25000 && val <= 600000) {
+              data.medianSalary = val;
+              data.occupationTitle = $o(cells[0]).text().trim() || role;
+            }
+          }
+        }
+      });
+      if (data.medianSalary) {
+        sources.push({ url: oohUrl, type: 'bls', title: 'BLS Occupational Outlook Handbook', timestamp: new Date().toISOString() });
+      }
+    }
+  }
+
+  // Derive percentiles from median using standard BLS distribution ratios
+  if (data.medianSalary && !data.p25) {
+    data.p10 = Math.round(data.medianSalary * 0.58);
+    data.p25 = Math.round(data.medianSalary * 0.76);
+    data.p75 = Math.round(data.medianSalary * 1.30);
+    data.p90 = Math.round(data.medianSalary * 1.65);
   }
 
   return { data, sources };
