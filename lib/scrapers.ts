@@ -196,109 +196,140 @@ export async function scrapeReddit(
 }
 
 // ── GLASSDOOR ────────────────────────────────────────────────────────────────
+
+const GLASSDOOR_UAS = [
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+];
+
+async function fetchGlassdoor(url: string): Promise<string> {
+  const ua = GLASSDOOR_UAS[Math.floor(Math.random() * GLASSDOOR_UAS.length)];
+  await new Promise(r => setTimeout(r, 800 + Math.random() * 600));
+  return fetchHtml(url, {
+    'User-Agent': ua,
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Referer': 'https://www.google.com/',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'cross-site',
+  });
+}
+
+function parseGlassdoorHtml(html: string, data: GlassdoorData, url: string, sources: ScrapedSource[], companyName: string) {
+  const $ = cheerio.load(html);
+  const bodyText = $('body').text();
+
+  // Rating — try many selectors + regex fallback on raw text
+  const ratingSelectors = ['.rating-headline-average', '.ratingNum', '[data-test="rating"]',
+    '.css-1pmc6te', '.e1rrn5ka2', '[class*="ratingNumber"]', '[class*="RatingNumber"]'];
+  for (const sel of ratingSelectors) {
+    const val = parseFloat($(sel).first().text().trim());
+    if (!isNaN(val) && val >= 1 && val <= 5) { data.overallRating = val; break; }
+  }
+  if (!data.overallRating) {
+    const m = bodyText.match(/(\d\.\d)\s*(?:out of 5|\/5|\s*stars?)/i);
+    if (m) data.overallRating = parseFloat(m[1]);
+  }
+
+  // Review count
+  const rcMatch = bodyText.match(/([\d,]+)\s*reviews?/i);
+  if (rcMatch) data.reviewCount = parseInt(rcMatch[1].replace(/,/g, ''));
+
+  // CEO approval %
+  const ceoMatch = bodyText.match(/(\d+)%\s*(?:approve|approval)/i);
+  if (ceoMatch) data.ceoApproval = parseInt(ceoMatch[1]);
+
+  // Recommend %
+  const recMatch = bodyText.match(/(\d+)%\s*(?:would recommend|recommend to a friend)/i);
+  if (recMatch) data.recommendToFriend = parseInt(recMatch[1]);
+
+  // Pros / cons
+  $('[data-test="pros"], [class*="pros"], .gdReview .pros').each((_, el) => {
+    const t = $(el).text().trim();
+    if (t.length > 10) data.pros.push(t.slice(0, 200));
+  });
+  $('[data-test="cons"], [class*="cons"], .gdReview .cons').each((_, el) => {
+    const t = $(el).text().trim();
+    if (t.length > 10) data.cons.push(t.slice(0, 200));
+  });
+
+  sources.push({ url, type: 'glassdoor', title: `${companyName} - Glassdoor`, timestamp: new Date().toISOString() });
+}
+
 export async function scrapeGlassdoor(
   companyName: string,
   role: string
 ): Promise<{ data: GlassdoorData; sources: ScrapedSource[] }> {
   const sources: ScrapedSource[] = [];
-
-  const searchUrl = `https://www.glassdoor.com/Search/results.htm?keyword=${encodeURIComponent(companyName)}&locT=N&locId=1`;
-
-  // Try searching Glassdoor for the company
-  const html = await fetchHtml(searchUrl, {
-    Referer: 'https://www.glassdoor.com/',
-    'sec-ch-ua': '"Chromium";v="122"',
-  });
-
-  // Default data structure (Glassdoor heavily anti-bots)
   const data: GlassdoorData = {
-    overallRating: null,
-    ratingTrend: 'Unable to determine',
-    ceoApproval: null,
-    recommendToFriend: null,
-    pros: [],
-    cons: [],
-    salaryData: null,
-    interviewDifficulty: null,
-    interviewExperience: null,
-    reviewCount: null,
+    overallRating: null, ratingTrend: 'Unknown', ceoApproval: null,
+    recommendToFriend: null, pros: [], cons: [], salaryData: null,
+    interviewDifficulty: null, interviewExperience: null, reviewCount: null,
   };
 
-  if (html) {
-    const $ = cheerio.load(html);
-
-    // Try to extract rating from search results
-    const ratingText = $('[data-test="rating-info"] .rating-info__rating').first().text().trim();
-    const rating = parseFloat(ratingText);
-    if (!isNaN(rating)) {
-      data.overallRating = rating;
-    }
-
-    // Extract review count
-    const reviewCountText = $('[data-test="rating-info"] .rating-info__count').first().text().trim();
-    const reviewMatch = reviewCountText.match(/[\d,]+/);
-    if (reviewMatch) {
-      data.reviewCount = parseInt(reviewMatch[0].replace(/,/g, ''));
-    }
-
-    sources.push({
-      url: searchUrl,
-      type: 'glassdoor',
-      title: `${companyName} on Glassdoor`,
-      timestamp: new Date().toISOString(),
+  // Strategy 1: Google News RSS to find the actual Glassdoor URL
+  const googleRss = `https://news.google.com/rss/search?q=site:glassdoor.com+"${encodeURIComponent(companyName)}"&hl=en-US&gl=US&ceid=US:en`;
+  const rssHtml = await fetchHtml(googleRss);
+  let glassdoorUrl = '';
+  if (rssHtml) {
+    const $rss = cheerio.load(rssHtml, { xmlMode: true });
+    $rss('item link, item guid').each((_, el) => {
+      const href = $rss(el).text().trim();
+      if (href.includes('glassdoor.com/Overview') || href.includes('glassdoor.com/Reviews')) {
+        glassdoorUrl = href;
+        return false;
+      }
     });
   }
 
-  // Try to get more data from the company overview page
-  const companySlug = companyName.toLowerCase().replace(/[^a-z0-9]/g, '-');
-  const overviewUrl = `https://www.glassdoor.com/Overview/Working-at-${companySlug}-EI_IE.htm`;
-  const overviewHtml = await fetchHtml(overviewUrl);
-
-  if (overviewHtml) {
-    const $ = cheerio.load(overviewHtml);
-
-    // Try multiple selectors for rating
-    const selectors = [
-      '.rating-headline-average',
-      '.ratingValue',
-      '[data-test="rating"]',
-      '.css-1pmc6te',
+  // Strategy 2: Try common slug patterns
+  if (!glassdoorUrl) {
+    const slug = companyName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const slugNoDash = companyName.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const candidates = [
+      `https://www.glassdoor.com/Reviews/${slug}-Reviews-E.htm`,
+      `https://www.glassdoor.com/Overview/Working-at-${slug}-EI_IE.htm`,
+      `https://www.glassdoor.com/Reviews/${slugNoDash}-Reviews-E.htm`,
     ];
-    for (const sel of selectors) {
-      const text = $(sel).first().text().trim();
-      const val = parseFloat(text);
-      if (!isNaN(val) && val >= 1 && val <= 5) {
-        data.overallRating = val;
+    for (const c of candidates) {
+      const h = await fetchGlassdoor(c);
+      if (h && h.length > 5000 && !h.includes('Page Not Found') && !h.includes('no results')) {
+        glassdoorUrl = c;
+        parseGlassdoorHtml(h, data, c, sources, companyName);
         break;
       }
     }
+  } else {
+    const h = await fetchGlassdoor(glassdoorUrl);
+    if (h) parseGlassdoorHtml(h, data, glassdoorUrl, sources, companyName);
+  }
 
-    // Extract pros and cons from reviews
-    $('[data-test="pros"]').each((_, el) => {
-      const text = $(el).text().trim();
-      if (text && text.length > 10) data.pros.push(text.slice(0, 200));
-    });
-    $('[data-test="cons"]').each((_, el) => {
-      const text = $(el).text().trim();
-      if (text && text.length > 10) data.cons.push(text.slice(0, 200));
-    });
+  // Strategy 3: Indeed company reviews as fallback
+  if (!data.overallRating) {
+    const indeedSlug = companyName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    const indeedUrl = `https://www.indeed.com/cmp/${indeedSlug}/reviews`;
+    const indeedHtml = await fetchHtml(indeedUrl, { Referer: 'https://www.indeed.com/' });
+    if (indeedHtml && indeedHtml.length > 3000) {
+      const $i = cheerio.load(indeedHtml);
+      const ratingText = $i('[data-testid="rating-number"], .css-1aq5k5r, [itemprop="ratingValue"]').first().text().trim();
+      const rating = parseFloat(ratingText);
+      if (!isNaN(rating) && rating >= 1 && rating <= 5) data.overallRating = rating;
 
-    // CEO approval
-    const ceoText = $('[data-test="ceo-approval"]').text().trim();
-    const ceoMatch = ceoText.match(/(\d+)%/);
-    if (ceoMatch) data.ceoApproval = parseInt(ceoMatch[1]);
+      const rcText = $i('[data-testid="review-count"]').first().text().trim();
+      const rcM = rcText.match(/[\d,]+/);
+      if (rcM) data.reviewCount = parseInt(rcM[0].replace(/,/g, ''));
 
-    // Recommend to friend
-    const recText = $('[data-test="recommend"]').text().trim();
-    const recMatch = recText.match(/(\d+)%/);
-    if (recMatch) data.recommendToFriend = parseInt(recMatch[1]);
+      $i('[data-testid="pros-list"] li, [class*="pros"] li').each((_, el) => {
+        data.pros.push($i(el).text().trim().slice(0, 200));
+      });
+      $i('[data-testid="cons-list"] li, [class*="cons"] li').each((_, el) => {
+        data.cons.push($i(el).text().trim().slice(0, 200));
+      });
 
-    sources.push({
-      url: overviewUrl,
-      type: 'glassdoor',
-      title: `${companyName} Overview - Glassdoor`,
-      timestamp: new Date().toISOString(),
-    });
+      sources.push({ url: indeedUrl, type: 'glassdoor', title: `${companyName} Reviews - Indeed`, timestamp: new Date().toISOString() });
+    }
   }
 
   return { data, sources };
@@ -519,11 +550,43 @@ export async function scrapeSEC(
 }
 
 // ── JOB POSTING ──────────────────────────────────────────────────────────────
+
+// Sites that require JS/login — flag to user instead of returning blank
+const LOGIN_WALL_DOMAINS = ['linkedin.com', 'indeed.com/viewjob'];
+
+function detectLoginWall(url: string, html: string): boolean {
+  const lower = url.toLowerCase();
+  if (LOGIN_WALL_DOMAINS.some(d => lower.includes(d))) return true;
+  // Generic login wall signals in HTML
+  if (/sign.?in to|log.?in to view|create an account to|join to see/i.test(html.slice(0, 3000))) return true;
+  return false;
+}
+
+// Extract JSON-LD structured data — most job boards embed this
+function extractJsonLd(html: string): Partial<JobPostingData> {
+  const result: Partial<JobPostingData> = {};
+  const matches = html.matchAll(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi);
+  for (const match of matches) {
+    try {
+      const json = JSON.parse(match[1]);
+      const job = json['@type'] === 'JobPosting' ? json : (Array.isArray(json['@graph']) ? json['@graph'].find((n: {['@type']: string}) => n['@type'] === 'JobPosting') : null);
+      if (!job) continue;
+      if (job.title) result.title = job.title;
+      if (job.hiringOrganization?.name) result.company = job.hiringOrganization.name;
+      if (job.jobLocation?.address?.addressLocality) result.location = job.jobLocation.address.addressLocality + (job.jobLocation.address.addressRegion ? ', ' + job.jobLocation.address.addressRegion : '');
+      if (job.datePosted) result.postedDate = job.datePosted;
+      if (job.baseSalary?.value?.minValue) result.salaryRange = { min: job.baseSalary.value.minValue, max: job.baseSalary.value.maxValue };
+      if (job.description) result.fullText = job.description.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 12000);
+      if (job.jobLocationType === 'TELECOMMUTE') result.remotePolicy = 'Remote';
+    } catch { /* skip bad JSON-LD */ }
+  }
+  return result;
+}
+
 export async function scrapeJobPosting(
   url: string
-): Promise<{ data: JobPostingData; sources: ScrapedSource[] }> {
+): Promise<{ data: JobPostingData; sources: ScrapedSource[]; loginWall?: boolean }> {
   const sources: ScrapedSource[] = [];
-  const html = await fetchHtml(url);
 
   const data: JobPostingData = {
     title: '',
@@ -539,60 +602,103 @@ export async function scrapeJobPosting(
     isRepost: false,
   };
 
+  const html = await fetchHtml(url, {
+    'Cache-Control': 'no-cache',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Upgrade-Insecure-Requests': '1',
+  });
+
   if (!html) return { data, sources };
 
+  // Detect login walls — tell the frontend to ask user to paste instead
+  if (detectLoginWall(url, html)) {
+    return { data: { ...data, fullText: '' }, sources, loginWall: true };
+  }
+
+  // Try JSON-LD first — cleanest data source
+  const jsonLd = extractJsonLd(html);
+  Object.assign(data, jsonLd);
+
   const $ = cheerio.load(html);
+  $('script, style, nav, footer, header, [aria-hidden="true"]').remove();
 
-  // Remove script/style tags
-  $('script, style, nav, footer, header').remove();
+  // ATS-specific selectors (Greenhouse, Lever, Workday, Ashby, iCIMS)
+  const titleSelectors = [
+    '.job-title', '.posting-headline h2', '[data-ui="job-title"]',
+    '[class*="JobTitle"]', '[class*="job_title"]', '[class*="jobtitle"]',
+    'h1.title', 'h1[class*="title"]', 'h1',
+  ];
+  if (!data.title) {
+    for (const sel of titleSelectors) {
+      const t = $(sel).first().text().trim();
+      if (t && t.length < 120) { data.title = t; break; }
+    }
+    if (!data.title) data.title = $('title').text().split(/[|\-–]/)[0].trim().slice(0, 100);
+  }
 
-  // Generic extraction
-  const fullText = $('body').text().replace(/\s+/g, ' ').trim();
-  data.fullText = fullText.slice(0, 8000);
+  if (!data.company) {
+    data.company = $(
+      '[class*="company-name"], [class*="companyName"], [itemprop="hiringOrganization"], .employer-name, [data-company]'
+    ).first().text().trim();
+  }
 
-  // Try to extract title from various job sites
-  data.title =
-    $('h1.jobTitle, h1.job-title, [data-testid="jobTitle"], .jobTitle, h1').first().text().trim().slice(0, 100) ||
-    $('title').text().split('|')[0].trim().slice(0, 100);
+  if (!data.location) {
+    data.location = $(
+      '[class*="location"], [itemprop="jobLocation"], [data-ui="job-location"], .posting-categories .sort-by-location'
+    ).first().text().trim();
+  }
 
-  data.company =
-    $('[data-testid="employer-name"], .companyName, .employer-name, [itemprop="hiringOrganization"]').first().text().trim() || '';
+  // Full text — prefer the job description container, fall back to body
+  const descSelectors = [
+    '#job-description', '.job-description', '[class*="jobDescription"]',
+    '[class*="job-desc"]', '[data-ui="job-body"]', '.posting-description',
+    '.description', 'article', 'main',
+  ];
+  let descText = '';
+  for (const sel of descSelectors) {
+    const el = $(sel).first();
+    if (el.length) { descText = el.text().replace(/\s+/g, ' ').trim(); break; }
+  }
+  if (!descText) descText = $('body').text().replace(/\s+/g, ' ').trim();
 
-  data.location =
-    $('[data-testid="job-location"], .jobLocation, .location, [itemprop="jobLocation"]').first().text().trim() || '';
+  if (!data.fullText) data.fullText = descText.slice(0, 12000);
 
-  // Salary extraction
-  const salaryMatch = fullText.match(/\$?([\d,]+)[kK]?\s*[-–—to]+\s*\$?([\d,]+)[kK]?\s*(per year|\/yr|annual|a year)?/i);
-  if (salaryMatch) {
-    let min = parseInt(salaryMatch[1].replace(/,/g, ''));
-    let max = parseInt(salaryMatch[2].replace(/,/g, ''));
-    if (min < 1000) { min *= 1000; max *= 1000; }
-    data.salaryRange = { min, max };
+  const fullText = data.fullText;
+
+  // Salary — only if not already from JSON-LD
+  if (!data.salaryRange) {
+    const m = fullText.match(/\$\s*([\d,]+)\s*[kK]?\s*(?:[-–—to]+)\s*\$?\s*([\d,]+)\s*[kK]?/);
+    if (m) {
+      let min = parseInt(m[1].replace(/,/g, ''));
+      let max = parseInt(m[2].replace(/,/g, ''));
+      if (min < 1000) { min *= 1000; max *= 1000; }
+      if (max > min && max < 5000000) data.salaryRange = { min, max };
+    }
   }
 
   // Remote policy
-  if (/remote/i.test(fullText)) data.remotePolicy = 'Remote';
-  else if (/hybrid/i.test(fullText)) data.remotePolicy = 'Hybrid';
-  else if (/on.?site|in.?office|in.?person/i.test(fullText)) data.remotePolicy = 'On-site';
-
-  // Extract requirements section
-  const reqSection = fullText.match(/(?:require[dm]?|qualification)[:\s]+([\s\S]{100,800}?)(?=responsibilit|benefit|about|what you|preferred|nice)/i);
-  if (reqSection) {
-    data.requirements = reqSection[1]
-      .split(/[\n•\-\*]/)
-      .map(s => s.trim())
-      .filter(s => s.length > 10)
-      .slice(0, 10);
+  if (!data.remotePolicy || data.remotePolicy === 'Not specified') {
+    if (/\bfully remote\b|\bremote.?first\b/i.test(fullText)) data.remotePolicy = 'Remote';
+    else if (/\bhybrid\b/i.test(fullText)) data.remotePolicy = 'Hybrid';
+    else if (/on.?site|in.?office|in.?person|required to be in/i.test(fullText)) data.remotePolicy = 'On-site';
+    else if (/remote/i.test(fullText)) data.remotePolicy = 'Remote (unconfirmed)';
   }
 
-  // Extract responsibilities
-  const respSection = fullText.match(/responsibilit[yi][e]?[s]?[:\s]+([\s\S]{100,800}?)(?=require|qualif|benefit|about|what you)/i);
-  if (respSection) {
-    data.responsibilities = respSection[1]
-      .split(/[\n•\-\*]/)
-      .map(s => s.trim())
-      .filter(s => s.length > 10)
-      .slice(0, 10);
+  // Requirements
+  if (!data.requirements.length) {
+    const m = fullText.match(/(?:require[dm]?s?|qualifications?|must have)[:\s]+([\s\S]{80,1200}?)(?=responsibilit|preferred|nice.to|benefit|about us|who we)/i);
+    if (m) {
+      data.requirements = m[1].split(/[•\n\-\*]/).map(s => s.trim()).filter(s => s.length > 8).slice(0, 12);
+    }
+  }
+
+  // Responsibilities
+  if (!data.responsibilities.length) {
+    const m = fullText.match(/(?:responsibilit|you will|what you.ll do|role overview)[:\s]+([\s\S]{80,1200}?)(?=require|qualif|benefit|about us|who we)/i);
+    if (m) {
+      data.responsibilities = m[1].split(/[•\n\-\*]/).map(s => s.trim()).filter(s => s.length > 8).slice(0, 12);
+    }
   }
 
   sources.push({

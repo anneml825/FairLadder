@@ -122,9 +122,15 @@ export default function AnalyzePage() {
       let jobPosting: JobPostingData | undefined;
       if (request.jobUrl) {
         setStep('job', { status: 'running' });
-        const res = await fetchStep<{ data: JobPostingData; sources: ScrapedSource[] }>(
+        const res = await fetchStep<{ data: JobPostingData; sources: ScrapedSource[]; loginWall?: boolean }>(
           'job', '/api/scrape/job', { url: request.jobUrl }, signal,
         );
+        if (res?.loginWall) {
+          // Site requires login — can't scrape. Tell user to paste and redirect back.
+          sessionStorage.setItem('fairladder_loginwall', '1');
+          router.push('/?loginwall=1');
+          return;
+        }
         if (res) {
           jobPosting = res.data;
           addSources(res.sources.length);
