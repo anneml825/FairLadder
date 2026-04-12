@@ -117,11 +117,11 @@ Cons: ${scrapedData.glassdoor?.cons?.slice(0, 5).join(' | ') || 'none scraped'}
 Interview difficulty: ${scrapedData.glassdoor?.interviewDifficulty ?? '?'}/5 | Interview experience: ${scrapedData.glassdoor?.interviewExperience ? `${scrapedData.glassdoor.interviewExperience.positive}% positive` : '?'}
 Interview quotes: ${scrapedData.glassdoor?.interviewQuotes?.slice(0, 2).join(' | ') || 'none'}
 
-NEWS (${scrapedData.news?.length ?? 0} articles):
-${scrapedData.news?.slice(0, 10).map(n => `[${n.publishedAt}] ${n.title} — ${n.summary?.slice(0, 120)}`).join('\n') || 'none found'}
+NEWS (${scrapedData.news?.length ?? 0} articles — most recent first):
+${scrapedData.news?.slice(0, 12).map(n => `[${n.publishedAt?.slice(0, 10)}] ${n.title} — ${n.summary?.slice(0, 80)}`).join('\n') || 'none found'}
 
-REDDIT EMPLOYEE DISCUSSIONS (${scrapedData.reddit?.length ?? 0} threads):
-${scrapedData.reddit?.slice(0, 12).map(t => `[r/${t.subreddit}] "${t.title}" (↑${t.score}) — ${t.body?.slice(0, 200) || t.topComments?.[0]?.slice(0, 200) || ''}`).join('\n') || 'none found'}
+REDDIT EMPLOYEE DISCUSSIONS (${scrapedData.reddit?.length ?? 0} threads found):
+${scrapedData.reddit?.slice(0, 8).map(t => `[r/${t.subreddit}] "${t.title}" — ${(t.body || t.topComments?.[0] || '').slice(0, 120)}`).join('\n') || 'none found'}
 
 SEC / FINANCIAL INTELLIGENCE:
 Layoff signals: ${scrapedData.sec?.layoffSignals?.join('; ') || 'none'}
@@ -161,7 +161,7 @@ Return ONLY valid JSON, no markdown fences, no text outside the JSON object:
           },
           body: JSON.stringify({
             model: 'claude-sonnet-4-6',
-            max_tokens: 4096,
+            max_tokens: 8192,
             stream: true,
             system: systemPrompt,
             messages: [{ role: 'user', content: userPrompt }],

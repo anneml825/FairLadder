@@ -214,7 +214,7 @@ export default function AnalyzePage() {
       } else setStep('bls', { status: 'done', count: 0 });
 
       if (secRes) {
-        setStep('sec', { status: 'done', count: secRes.data.filings.length });
+        setStep('sec', { status: 'done', count: secRes.sources.length });
         addSources(secRes.sources.length);
       } else setStep('sec', { status: 'done', count: 0 });
 

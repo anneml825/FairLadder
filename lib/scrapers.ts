@@ -96,38 +96,67 @@ export async function scrapeGoogleNews(
 }
 
 // ── REDDIT ───────────────────────────────────────────────────────────────────
-// Reddit's JSON API blocks Vercel/datacenter IPs. We search DuckDuckGo for
-// reddit.com results instead — same threads, not IP-blocked.
-function parseRedditFromDDG(html: string, seen: Set<string>, threads: RedditThread[], sources: ScrapedSource[]) {
+// Reddit's JSON API blocks datacenter IPs. We search DuckDuckGo and Google News
+// for reddit.com results. DDG wraps links in redirect URLs (uddg= param) so we
+// extract Reddit URLs via regex on raw HTML rather than href selectors.
+
+const REDDIT_URL_RE = /https?:\/\/(?:www\.)?reddit\.com\/r\/[a-zA-Z0-9_]+\/comments\/[a-zA-Z0-9]+\/[^"'\s<>&]*/g;
+
+function extractRedditThreads(
+  html: string,
+  seen: Set<string>,
+  threads: RedditThread[],
+  sources: ScrapedSource[],
+) {
+  // 1. Regex the raw HTML — catches URLs inside DDG's uddg= redirect params too
+  const rawUrls = [...new Set((html.match(REDDIT_URL_RE) || []).map(u => u.replace(/\/$/, '')))];
+
+  // 2. Also decode any uddg= params to surface reddit URLs hidden in redirects
+  const uddgRe = /uddg=(https?%3A%2F%2F[^&"'\s]+reddit[^&"'\s]+)/gi;
+  for (const m of html.matchAll(uddgRe)) {
+    try {
+      const decoded = decodeURIComponent(m[1]);
+      if (/reddit\.com\/r\/\w+\/comments\//.test(decoded)) rawUrls.push(decoded.replace(/\/$/, ''));
+    } catch { /* skip */ }
+  }
+
+  // 3. Load cheerio to pair URLs with nearby title/snippet text
   const $ = cheerio.load(html);
-  $('a[href*="reddit.com/r/"]').each((_, el) => {
+  const linkTexts: Record<string, string> = {};
+  const linkSnippets: Record<string, string> = {};
+  $('a').each((_, el) => {
     const href = $(el).attr('href') || '';
-    if (!href.includes('/comments/')) return;
-    // Clean up DDG redirect wrapping if present
-    let threadUrl = href.startsWith('http') ? href : `https://${href.replace(/^\/\//, '')}`;
-    try { threadUrl = new URL(threadUrl).href; } catch { return; }
-    if (seen.has(threadUrl)) return;
-    seen.add(threadUrl);
-
-    const title = $(el).text().trim();
-    if (!title || title.length < 5) return;
-
-    // Snippet is in the next sibling row/cell in DDG Lite
-    const snippet = $(el).closest('tr').next('tr').find('td').text().trim() ||
-                    $(el).parent().next().text().trim();
-
-    const subredditM = threadUrl.match(/reddit\.com\/r\/([^/]+)/);
-    threads.push({
-      title: title.slice(0, 200),
-      url: threadUrl,
-      subreddit: subredditM?.[1] || 'reddit',
-      score: 0,
-      commentCount: 0,
-      topComments: snippet ? [snippet.slice(0, 400)] : [],
-      body: snippet?.slice(0, 400),
-    });
-    sources.push({ url: threadUrl, type: 'reddit', title: title.slice(0, 120), timestamp: new Date().toISOString() });
+    const text = $(el).text().trim();
+    const snippet = $(el).closest('tr').next('tr').find('td').text().trim();
+    // Check if href is or contains a reddit URL
+    if (href.includes('reddit.com')) {
+      const m = href.match(REDDIT_URL_RE);
+      if (m) { linkTexts[m[0]] = text; linkSnippets[m[0]] = snippet; }
+    }
+    // Also match on link text that looks like a reddit thread title
+    for (const url of rawUrls) {
+      if (!linkTexts[url] && text.length > 8 && href.includes(encodeURIComponent('reddit.com'))) {
+        linkTexts[url] = text;
+        linkSnippets[url] = snippet;
+      }
+    }
   });
+
+  for (const url of rawUrls) {
+    if (seen.has(url)) continue;
+    seen.add(url);
+    const title = linkTexts[url] || url.split('/').slice(-1)[0].replace(/_/g, ' ') || url;
+    const snippet = linkSnippets[url] || '';
+    const subredditM = url.match(/reddit\.com\/r\/([^/]+)/);
+    threads.push({
+      title: title.slice(0, 200), url,
+      subreddit: subredditM?.[1] || 'reddit',
+      score: 0, commentCount: 0,
+      topComments: snippet ? [snippet.slice(0, 400)] : [],
+      body: snippet.slice(0, 400),
+    });
+    sources.push({ url, type: 'reddit', title: title.slice(0, 120), timestamp: new Date().toISOString() });
+  }
 }
 
 export async function scrapeReddit(
@@ -138,45 +167,29 @@ export async function scrapeReddit(
   const sources: ScrapedSource[] = [];
   const seen = new Set<string>();
 
-  // Search DuckDuckGo for Reddit threads — avoids Reddit's datacenter IP block
-  const queries = [
-    `site:reddit.com "${companyName}" employees culture work`,
-    `site:reddit.com "${companyName}" ${role} salary compensation`,
-    `site:reddit.com "${companyName}" layoffs interview hiring`,
-    `site:reddit.com "${companyName}" toxic management work life balance`,
-    `site:reddit.com "${companyName}" career advice joining worth it`,
+  // DuckDuckGo searches — "company reddit" style finds threads without site: restriction
+  // which is more reliable than site:reddit.com on DDG Lite
+  const ddgQueries = [
+    `"${companyName}" reddit employees culture work experience`,
+    `"${companyName}" reddit salary compensation pay`,
+    `"${companyName}" reddit layoffs interview hiring`,
+    role ? `"${companyName}" "${role}" reddit experience` : `"${companyName}" reddit career advice`,
   ];
 
-  for (const q of queries) {
-    const ddgHtml = await fetchHtml(
+  for (const q of ddgQueries) {
+    const html = await fetchHtml(
       `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(q)}`,
       { Referer: 'https://lite.duckduckgo.com/' }
     );
-    if (ddgHtml && ddgHtml.length > 1000) {
-      parseRedditFromDDG(ddgHtml, seen, threads, sources);
-    }
+    if (html && html.length > 500) extractRedditThreads(html, seen, threads, sources);
   }
 
-  // Also try Google News RSS for Reddit threads (surfaces highly-upvoted posts)
-  const gnQuery = `${companyName} site:reddit.com`;
-  const gnXml = await fetchHtml(
-    `https://news.google.com/rss/search?q=${encodeURIComponent(gnQuery)}&hl=en-US&gl=US&ceid=US:en`
-  );
-  if (gnXml) {
-    const $rss = cheerio.load(gnXml, { xmlMode: true });
-    $rss('item').each((_, el) => {
-      const link = $rss(el).find('link').text().trim() || $rss(el).find('guid').text().trim();
-      const title = $rss(el).find('title').text().trim();
-      if (!link.includes('reddit.com') || seen.has(link)) return;
-      seen.add(link);
-      const subredditM = link.match(/reddit\.com\/r\/([^/]+)/);
-      threads.push({
-        title, url: link,
-        subreddit: subredditM?.[1] || 'reddit',
-        score: 0, commentCount: 0, topComments: [], body: '',
-      });
-      sources.push({ url: link, type: 'reddit', title: title.slice(0, 120), timestamp: new Date().toISOString() });
-    });
+  // Google News RSS — surfaces Reddit posts that got news coverage + direct reddit links
+  for (const q of [`"${companyName}" reddit`, `"${companyName}" site:reddit.com`]) {
+    const rssXml = await fetchHtml(
+      `https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=en-US&gl=US&ceid=US:en`
+    );
+    if (rssXml) extractRedditThreads(rssXml, seen, threads, sources);
   }
 
   return { threads: threads.slice(0, 60), sources };
