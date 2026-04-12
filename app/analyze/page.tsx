@@ -171,7 +171,7 @@ export default function AnalyzePage() {
         ),
 
         fetchStep<{ data: BLSData; sources: ScrapedSource[] }>(
-          'bls', '/api/scrape/bls', { role: role || request.companyName }, signal,
+          'bls', '/api/scrape/bls', { role: role || request.companyName, location: request.location }, signal,
         ),
 
         fetchStep<{ data: SECData; sources: ScrapedSource[] }>(
@@ -236,7 +236,7 @@ export default function AnalyzePage() {
         p10: null, p25: null, p75: null, p90: null,
         yearOverYearChange: 'N/A', locationData: '',
       };
-      const defaultSEC: SECData = { filings: [], layoffSignals: [], executiveDepartures: [] };
+      const defaultSEC: SECData = { filings: [], layoffSignals: [], executiveDepartures: [], fundingSignals: [], financialSignals: [] };
 
       try {
         const claudeRes = await fetch('/api/claude', {

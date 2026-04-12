@@ -47,6 +47,9 @@ export async function scrapeGoogleNews(
     `${companyName} salary OR compensation OR pay OR raise OR bonus`,
     `${companyName} interview OR hiring OR fired OR laid off OR restructuring`,
     `${companyName} remote work OR "return to office" OR "work from home" OR RTO`,
+    `${companyName} CEO leadership executive news`,
+    `${companyName} revenue earnings profit quarterly results`,
+    `${companyName} funding raised series investment valuation`,
   ];
 
   for (const q of queries) {
@@ -257,6 +260,55 @@ export async function scrapeGlassdoor(
     });
   }
 
+  // CEO info and approval via DDG
+  const ceoQuery = `${companyName} CEO leadership approval rating`;
+  const ceoHtml = await fetchHtml(
+    `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(ceoQuery)}`,
+    { Referer: 'https://lite.duckduckgo.com/' }
+  );
+  if (ceoHtml && ceoHtml.length > 1000) {
+    const plain = ceoHtml.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
+    // CEO name patterns: "CEO John Smith" or "John Smith, CEO"
+    const ceoM =
+      plain.match(/(?:CEO|Chief Executive)[,\s]+([A-Z][a-z]+ [A-Z][a-z]+)/i) ||
+      plain.match(/([A-Z][a-z]+ [A-Z][a-z]+)[,\s]+(?:is |as )?(?:CEO|Chief Executive)/i);
+    if (ceoM) data.ceoName = ceoM[1].trim();
+    if (!data.ceoApproval) {
+      const approvalM = plain.match(/(\d+)%\s*(?:approve|approval|approved)/i);
+      if (approvalM) data.ceoApproval = parseInt(approvalM[1]);
+    }
+    sources.push({ url: `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(ceoQuery)}`, type: 'glassdoor', title: `${companyName} CEO & Leadership`, timestamp: new Date().toISOString() });
+  }
+
+  // Interview experience via DDG
+  const intQuery = `${companyName} interview experience difficulty process questions`;
+  const intHtml = await fetchHtml(
+    `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(intQuery)}`,
+    { Referer: 'https://lite.duckduckgo.com/' }
+  );
+  if (intHtml && intHtml.length > 1000) {
+    const plain = intHtml.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
+    const diffM = plain.match(/interview[^0-9]*?(\d\.\d)\s*(?:\/5|out of|stars)/i);
+    if (diffM) data.interviewDifficulty = parseFloat(diffM[1]);
+    const posM = plain.match(/(\d+)%\s*(?:positive|good|had a positive)/i);
+    if (posM) {
+      const pos = parseInt(posM[1]);
+      data.interviewExperience = { positive: pos, neutral: Math.max(0, 20 - Math.abs(pos - 60)), negative: 100 - pos };
+    }
+    // Pull 2-3 interview quote snippets
+    const $int = cheerio.load(intHtml);
+    $int('td, .result-snippet').each((_, el) => {
+      const t = $int(el).text().trim();
+      if (t.length > 40 && t.length < 300 &&
+          /interview|hiring|process|question|round|offer/i.test(t) &&
+          (data.interviewQuotes?.length ?? 0) < 3) {
+        if (!data.interviewQuotes) data.interviewQuotes = [];
+        data.interviewQuotes.push(t.slice(0, 250));
+      }
+    });
+    sources.push({ url: `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(intQuery)}`, type: 'glassdoor', title: `${companyName} Interview Experience`, timestamp: new Date().toISOString() });
+  }
+
   // Strategy 2: Indeed company reviews — structured page with JSON-LD
   if (!data.overallRating || data.pros.length === 0) {
     const indeedSlug = companyName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
@@ -390,7 +442,8 @@ export async function scrapeLevels(
 
 // ── BLS ──────────────────────────────────────────────────────────────────────
 export async function scrapeBLS(
-  role: string
+  role: string,
+  location?: string
 ): Promise<{ data: BLSData; sources: ScrapedSource[] }> {
   const sources: ScrapedSource[] = [];
   const data: BLSData = {
@@ -430,6 +483,24 @@ export async function scrapeBLS(
       title: `${role} — BLS Wage Data`,
       timestamp: new Date().toISOString(),
     });
+  }
+
+  // Location-specific salary search
+  if (location && location !== 'Remote') {
+    const locQuery = `${role} salary ${location} average annual wage`;
+    const locHtml = await fetchHtml(
+      `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(locQuery)}`,
+      { Referer: 'https://lite.duckduckgo.com/' }
+    );
+    if (locHtml && locHtml.length > 1000) {
+      const plain = locHtml.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
+      const locSalM = plain.match(/\$\s*([\d]{2,3},\d{3})\s*(?:per year|annually|average|median)/i);
+      if (locSalM) {
+        const val = parseInt(locSalM[1].replace(/,/g, ''));
+        if (val >= 25000 && val <= 600000) data.locationData = `${location} average: $${val.toLocaleString()}`;
+      }
+      sources.push({ url: `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(locQuery)}`, type: 'bls', title: `${role} Salary in ${location}`, timestamp: new Date().toISOString() });
+    }
   }
 
   // Strategy 2: BLS Occupational Outlook Handbook search (cleaner pages than OES table)
@@ -484,6 +555,8 @@ export async function scrapeSEC(
     filings: [],
     layoffSignals: [],
     executiveDepartures: [],
+    fundingSignals: [],
+    financialSignals: [],
   };
 
   const searchUrl = `https://efts.sec.gov/LATEST/search-index?q=%22${encodeURIComponent(companyName)}%22&dateRange=custom&startdt=${new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]}&enddt=${new Date().toISOString().split('T')[0]}&forms=8-K`;
@@ -534,6 +607,39 @@ export async function scrapeSEC(
         });
       }
     } catch { /* JSON parse error */ }
+  }
+
+  // Financial strength signals via DDG
+  const finQuery = `${companyName} revenue profit financial results annual report 2024 2025`;
+  const finHtml = await fetchHtml(
+    `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(finQuery)}`,
+    { Referer: 'https://lite.duckduckgo.com/' }
+  );
+  if (finHtml && finHtml.length > 1000) {
+    const plain = finHtml.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
+    // Revenue signals
+    const revM = plain.match(/revenue[^$]*\$\s*([\d.]+)\s*(billion|million|B|M)\b/gi);
+    if (revM) data.financialSignals.push(...revM.slice(0, 3).map(m => m.trim().slice(0, 120)));
+    // Profit/loss
+    const profitM = plain.match(/(?:profit|loss|net income)[^$\n]*\$\s*([\d.]+)\s*(?:billion|million)/gi);
+    if (profitM) data.financialSignals.push(...profitM.slice(0, 2).map(m => m.trim().slice(0, 120)));
+    sources.push({ url: `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(finQuery)}`, type: 'sec', title: `${companyName} Financial Results`, timestamp: new Date().toISOString() });
+  }
+
+  // Funding and investment history via DDG
+  const fundQuery = `${companyName} funding raised investment series valuation crunchbase`;
+  const fundHtml = await fetchHtml(
+    `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(fundQuery)}`,
+    { Referer: 'https://lite.duckduckgo.com/' }
+  );
+  if (fundHtml && fundHtml.length > 1000) {
+    const plain = fundHtml.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
+    const fundM = plain.match(/(?:raised|funding|series|invested)[^$\n]*\$\s*([\d.]+)\s*(?:billion|million|B|M)[^\n]*/gi);
+    if (fundM) data.fundingSignals.push(...fundM.slice(0, 4).map(m => m.trim().slice(0, 150)));
+    // Headcount signals
+    const headM = plain.match(/(\d[\d,]+)\s+employees/gi);
+    if (headM) data.financialSignals.push(...headM.slice(0, 2));
+    sources.push({ url: `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(fundQuery)}`, type: 'sec', title: `${companyName} Funding & Investors`, timestamp: new Date().toISOString() });
   }
 
   // Also try EDGAR full-text search

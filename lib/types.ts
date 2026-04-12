@@ -48,6 +48,8 @@ export interface GlassdoorData {
   interviewDifficulty: number | null;
   interviewExperience: { positive: number; neutral: number; negative: number } | null;
   reviewCount: number | null;
+  ceoName?: string;
+  interviewQuotes?: string[];
 }
 
 export interface LevelsData {
@@ -86,6 +88,8 @@ export interface SECData {
   }>;
   layoffSignals: string[];
   executiveDepartures: string[];
+  fundingSignals: string[];
+  financialSignals: string[];
 }
 
 export interface JobPostingData {

@@ -110,25 +110,29 @@ Desired salary: $${request.desiredSalaryMin?.toLocaleString()}–$${request.desi
 JOB POSTING:
 ${jobText.slice(0, 2500)}
 
-GLASSDOOR:
-Rating: ${scrapedData.glassdoor?.overallRating ?? 'not scraped'}/5 | Reviews: ${scrapedData.glassdoor?.reviewCount ?? '?'} | CEO approval: ${scrapedData.glassdoor?.ceoApproval ?? '?'}% | Recommend: ${scrapedData.glassdoor?.recommendToFriend ?? '?'}%
+COMPANY REVIEWS & CULTURE:
+Rating: ${scrapedData.glassdoor?.overallRating ?? 'not scraped'}/5 | Reviews: ${scrapedData.glassdoor?.reviewCount ?? '?'} | CEO: ${scrapedData.glassdoor?.ceoName ?? 'unknown'} | CEO approval: ${scrapedData.glassdoor?.ceoApproval ?? '?'}% | Recommend: ${scrapedData.glassdoor?.recommendToFriend ?? '?'}%
 Pros: ${scrapedData.glassdoor?.pros?.slice(0, 5).join(' | ') || 'none scraped'}
 Cons: ${scrapedData.glassdoor?.cons?.slice(0, 5).join(' | ') || 'none scraped'}
-Interview difficulty: ${scrapedData.glassdoor?.interviewDifficulty ?? '?'}/5
-
-REDDIT (${scrapedData.reddit?.length ?? 0} threads):
-${scrapedData.reddit?.slice(0, 8).map(t => `[r/${t.subreddit}] "${t.title}" (↑${t.score})\n${t.topComments?.slice(0, 2).join(' | ')}`).join('\n') || 'none found'}
+Interview difficulty: ${scrapedData.glassdoor?.interviewDifficulty ?? '?'}/5 | Interview experience: ${scrapedData.glassdoor?.interviewExperience ? `${scrapedData.glassdoor.interviewExperience.positive}% positive` : '?'}
+Interview quotes: ${scrapedData.glassdoor?.interviewQuotes?.slice(0, 2).join(' | ') || 'none'}
 
 NEWS (${scrapedData.news?.length ?? 0} articles):
 ${scrapedData.news?.slice(0, 10).map(n => `[${n.publishedAt}] ${n.title} — ${n.summary?.slice(0, 120)}`).join('\n') || 'none found'}
 
-SEC FILINGS:
+REDDIT EMPLOYEE DISCUSSIONS (${scrapedData.reddit?.length ?? 0} threads):
+${scrapedData.reddit?.slice(0, 12).map(t => `[r/${t.subreddit}] "${t.title}" (↑${t.score}) — ${t.body?.slice(0, 200) || t.topComments?.[0]?.slice(0, 200) || ''}`).join('\n') || 'none found'}
+
+SEC / FINANCIAL INTELLIGENCE:
 Layoff signals: ${scrapedData.sec?.layoffSignals?.join('; ') || 'none'}
 Executive departures: ${scrapedData.sec?.executiveDepartures?.join('; ') || 'none'}
 Recent 8-Ks: ${scrapedData.sec?.filings?.slice(0, 4).map(f => `${f.date}: ${f.description}`).join('; ') || 'none'}
+Financial signals: ${scrapedData.sec?.financialSignals?.join(' | ') || 'none'}
+Funding history: ${scrapedData.sec?.fundingSignals?.join(' | ') || 'none'}
 
 SALARY DATA:
-BLS median: $${scrapedData.bls?.medianSalary?.toLocaleString() ?? 'not found'} | P10: $${scrapedData.bls?.p10?.toLocaleString() ?? '?'} | P90: $${scrapedData.bls?.p90?.toLocaleString() ?? '?'}
+BLS median: $${scrapedData.bls?.medianSalary?.toLocaleString() ?? 'not found'} | P10: $${scrapedData.bls?.p10?.toLocaleString() ?? '?'} | P25: $${scrapedData.bls?.p25?.toLocaleString() ?? '?'} | P75: $${scrapedData.bls?.p75?.toLocaleString() ?? '?'} | P90: $${scrapedData.bls?.p90?.toLocaleString() ?? '?'}
+Location salary: ${scrapedData.bls?.locationData || 'not found'}
 Levels.fyi: ${scrapedData.levels?.targetRoleSalaries?.slice(0, 3).map(s => `${s.company} $${s.base?.toLocaleString()} base`).join(', ') || 'none found'}
 Comparable cos: ${scrapedData.levels?.comparableSalaries?.slice(0, 3).map(s => `${s.company} $${s.base?.toLocaleString()}`).join(', ') || 'none'}
 
