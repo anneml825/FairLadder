@@ -36,7 +36,8 @@ async function fetchHtml(url: string, extraHeaders: Record<string, string> = {})
 
 // ── GOOGLE NEWS ──────────────────────────────────────────────────────────────
 export async function scrapeGoogleNews(
-  companyName: string
+  companyName: string,
+  role?: string
 ): Promise<{ results: GoogleNewsResult[]; sources: ScrapedSource[] }> {
   const results: GoogleNewsResult[] = [];
   const sources: ScrapedSource[] = [];
@@ -53,6 +54,12 @@ export async function scrapeGoogleNews(
     `${companyName} lawsuit OR regulatory OR investigation OR fine OR SEC OR DOJ`,
     `${companyName} "return to office" OR RTO OR remote OR "work from home" OR hybrid`,
   ];
+
+  // Add role-specific queries when a role is known
+  if (role && role.length > 2) {
+    queries.push(`${companyName} "${role}" team hiring department`);
+    queries.push(`"${role}" ${companyName} salary pay compensation range`);
+  }
 
   for (const q of queries) {
     const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=en-US&gl=US&ceid=US:en`;

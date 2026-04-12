@@ -138,9 +138,15 @@ export default function AnalyzePage() {
         } else if (signal.aborted) return;
         else setStep('job', { status: 'done', count: 0 });
       } else {
-        // Paste mode — synthesize a jobPosting object from the pasted text
+        // Paste mode — extract job title from first meaningful line of pasted text
+        const pastedLines = (request.jobText || '').split('\n').map(l => l.trim()).filter(Boolean);
+        const extractedTitle = pastedLines.find(
+          l => l.length > 3 && l.length < 100 &&
+               !l.toLowerCase().includes(request.companyName.toLowerCase()) &&
+               !/^(about|we are|we're|join|apply|the role|overview|description|location|salary|benefits|requirements)/i.test(l)
+        ) || pastedLines[0] || '';
         jobPosting = {
-          title: '', company: request.companyName, location: request.location,
+          title: extractedTitle, company: request.companyName, location: request.location,
           salaryRange: null, requirements: [], responsibilities: [], benefits: [],
           remotePolicy: 'Not specified', postedDate: '', fullText: request.jobText || '',
           isRepost: false,
@@ -155,7 +161,7 @@ export default function AnalyzePage() {
       const [newsRes, redditRes, glassdoorRes, levelsRes, blsRes, secRes] = await Promise.all([
 
         fetchStep<{ results: GoogleNewsResult[]; sources: ScrapedSource[] }>(
-          'news', '/api/scrape/news', { companyName: request.companyName }, signal,
+          'news', '/api/scrape/news', { companyName: request.companyName, role }, signal,
         ),
 
         fetchStep<{ threads: RedditThread[]; sources: ScrapedSource[] }>(
@@ -171,7 +177,7 @@ export default function AnalyzePage() {
         ),
 
         fetchStep<{ data: BLSData; sources: ScrapedSource[] }>(
-          'bls', '/api/scrape/bls', { role: role || request.companyName, location: request.location }, signal,
+          'bls', '/api/scrape/bls', { role: role || 'professional worker', location: request.location }, signal,
         ),
 
         fetchStep<{ data: SECData; sources: ScrapedSource[] }>(
