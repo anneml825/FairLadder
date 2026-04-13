@@ -19,6 +19,28 @@ const HEADERS = {
   Connection: 'keep-alive',
 };
 
+// ── SERPAPI ──────────────────────────────────────────────────────────────────
+// Real Google search results via SerpAPI. Key is optional — all callers fall
+// back gracefully if SERPAPI_KEY is not set.
+
+interface SerpResult { title: string; link: string; snippet: string; }
+
+async function searchSerp(query: string, num = 10): Promise<SerpResult[]> {
+  const key = process.env.SERPAPI_KEY;
+  if (!key) return [];
+  try {
+    const url = `https://serpapi.com/search.json?api_key=${key}&q=${encodeURIComponent(query)}&num=${num}&hl=en&gl=us`;
+    const res = await axios.get(url, { timeout: 12000 });
+    const results: Array<{ title?: string; link?: string; snippet?: string }> = res.data?.organic_results ?? [];
+    return results
+      .filter(r => r.link && r.title)
+      .map(r => ({ title: r.title ?? '', link: r.link ?? '', snippet: r.snippet ?? '' }));
+  } catch (e: unknown) {
+    console.error('SerpAPI error:', (e as { message: string }).message);
+    return [];
+  }
+}
+
 async function fetchHtml(url: string, extraHeaders: Record<string, string> = {}): Promise<string> {
   try {
     const res = await axios.get(url, {
@@ -185,61 +207,101 @@ export async function scrapeReddit(
     sources.push({ url: p.url, type: 'reddit', title: p.title.slice(0, 120), timestamp: new Date().toISOString() });
   };
 
-  // Primary: Reddit's own search API
+  // Primary: SerpAPI → site:reddit.com Google search → fetch each thread's .json
+  // This gives us real Google-ranked Reddit results + full thread content
+  const serpQueries = [
+    `site:reddit.com "${companyName}" employees culture work experience`,
+    `site:reddit.com "${companyName}" salary compensation pay`,
+    `site:reddit.com "${companyName}" interview hiring layoffs`,
+    role ? `site:reddit.com "${companyName}" "${role}"` : `site:reddit.com "${companyName}" career`,
+  ];
+  for (const q of serpQueries) {
+    const results = await searchSerp(q, 8);
+    for (const r of results) {
+      if (!r.link.includes('reddit.com/r/') || seen.has(r.link)) continue;
+      seen.add(r.link);
+      const subredditM = r.link.match(/reddit\.com\/r\/([^/]+)/);
+      // Fetch full thread via Reddit's .json endpoint
+      let body = r.snippet;
+      let topComments: string[] = [];
+      try {
+        const jsonUrl = r.link.replace(/\/$/, '') + '.json?limit=5';
+        const jsonRes = await axios.get(jsonUrl, {
+          headers: { 'User-Agent': REDDIT_UA, Accept: 'application/json' },
+          timeout: 8000,
+        });
+        type RedditJsonPost = { data: { selftext?: string } };
+        type RedditJsonComment = { data: { body?: string; score?: number } };
+        const postData: RedditJsonPost = jsonRes.data?.[0]?.data?.children?.[0] ?? {};
+        body = postData.data?.selftext?.slice(0, 600) || r.snippet;
+        const comments: RedditJsonComment[] = jsonRes.data?.[1]?.data?.children ?? [];
+        topComments = comments
+          .filter((c) => c.data?.body && c.data.body !== '[deleted]')
+          .slice(0, 3)
+          .map((c) => (c.data.body ?? '').slice(0, 300));
+      } catch { /* fall back to snippet */ }
+      threads.push({ title: r.title, url: r.link, subreddit: subredditM?.[1] || 'reddit', score: 0, commentCount: 0, topComments, body });
+      sources.push({ url: r.link, type: 'reddit', title: r.title.slice(0, 120), timestamp: new Date().toISOString() });
+    }
+  }
+
+  // Fallback: Reddit's own search API (if SerpAPI key not set or returned few results)
   const queries = [
     `"${companyName}" employees culture work`,
     `"${companyName}" salary compensation pay`,
     `"${companyName}" layoffs interview hiring`,
     role ? `"${companyName}" "${role}"` : `"${companyName}" career`,
   ];
-  for (const q of queries) {
-    const posts = await fetchRedditSearch(q);
-    posts.forEach(addPost);
-  }
-
-  // Subreddit-targeted searches — cast wide net across professional communities
-  const subreddits = ['cscareerquestions', 'jobs', 'careerguidance', 'recruiting',
-    'ExperiencedDevs', 'softwareengineering', 'datascience', 'personalfinance', 'AskHR', 'remotework'];
-  for (const sub of subreddits) {
-    const posts = await fetchRedditSearch(`"${companyName}"`, sub);
-    posts.forEach(addPost);
-  }
-
-  // Try old.reddit.com search — server-side rendered HTML, fewer bot filters than JSON API
+  // Fallback layer 1: Reddit's own JSON search API
   if (threads.length < 5) {
-    for (const q of [
-      `"${companyName}" employees culture`,
-      `"${companyName}" salary interview`,
-    ]) {
-      const html = await fetchHtml(
-        `https://old.reddit.com/search?q=${encodeURIComponent(q)}&sort=relevance&t=year`,
-        { 'User-Agent': REDDIT_UA, Accept: 'text/html' },
-      );
-      if (html && html.length > 1000) {
-        // old.reddit search results have direct post links
-        const $ = cheerio.load(html);
-        $('a.search-title').each((_, el) => {
-          const href = $(el).attr('href') || '';
-          const title = $(el).text().trim();
-          const url = href.startsWith('http') ? href : `https://www.reddit.com${href}`;
-          if (!seen.has(url) && /reddit\.com\/r\//.test(url)) {
-            seen.add(url);
-            const subredditM = url.match(/reddit\.com\/r\/([^/]+)/);
-            threads.push({ title, url, subreddit: subredditM?.[1] || 'reddit', score: 0, commentCount: 0, topComments: [], body: '' });
-            sources.push({ url, type: 'reddit', title: title.slice(0, 120), timestamp: new Date().toISOString() });
-          }
-        });
-      }
+    for (const q of queries) {
+      const posts = await fetchRedditSearch(q);
+      posts.forEach(addPost);
+    }
+    // Subreddit-targeted searches
+    const subreddits = ['cscareerquestions', 'jobs', 'careerguidance', 'recruiting',
+      'ExperiencedDevs', 'softwareengineering', 'datascience', 'personalfinance', 'AskHR', 'remotework'];
+    for (const sub of subreddits) {
+      const posts = await fetchRedditSearch(`"${companyName}"`, sub);
+      posts.forEach(addPost);
     }
   }
 
-  // Fallback: Google News RSS for site:reddit.com results
+  // Fallback layer 2: Google News RSS (always runs — catches news-indexed Reddit content)
   for (const q of [`"${companyName}" site:reddit.com`, `"${companyName}" reddit employees`]) {
     const rssXml = await fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=en-US&gl=US&ceid=US:en`);
     if (rssXml) extractRedditThreads(rssXml, seen, threads, sources);
   }
 
   return { threads: threads.slice(0, 60), sources };
+}
+
+// ── GOOGLE CUSTOM SEARCH ─────────────────────────────────────────────────────
+// Used for Glassdoor/Comparably/salary searches. 100 queries/day free.
+// Requires GOOGLE_SEARCH_API_KEY + GOOGLE_SEARCH_CX env vars.
+
+async function searchGoogle(query: string, num = 10): Promise<SerpResult[]> {
+  const key = process.env.GOOGLE_SEARCH_API_KEY;
+  const cx = process.env.GOOGLE_SEARCH_CX;
+  if (!key || !cx) return [];
+  try {
+    const url = `https://www.googleapis.com/customsearch/v1?key=${key}&cx=${cx}&q=${encodeURIComponent(query)}&num=${Math.min(num, 10)}`;
+    const res = await axios.get(url, { timeout: 12000 });
+    const items: Array<{ title?: string; link?: string; snippet?: string }> = res.data?.items ?? [];
+    return items
+      .filter(r => r.link && r.title)
+      .map(r => ({ title: r.title ?? '', link: r.link ?? '', snippet: r.snippet ?? '' }));
+  } catch (e: unknown) {
+    console.error('Google CSE error:', (e as { message: string }).message);
+    return [];
+  }
+}
+
+// Unified web search — uses whichever key is available (SerpAPI preferred for quota reasons)
+async function searchWeb(query: string, num = 10): Promise<SerpResult[]> {
+  if (process.env.SERPAPI_KEY) return searchSerp(query, num);
+  if (process.env.GOOGLE_SEARCH_API_KEY) return searchGoogle(query, num);
+  return [];
 }
 
 // ── GLASSDOOR ────────────────────────────────────────────────────────────────
@@ -316,8 +378,34 @@ export async function scrapeGlassdoor(
     interviewDifficulty: null, interviewExperience: null, reviewCount: null,
   };
 
-  // Strategy 2: Comparably — server-side rendered, less aggressive bot detection,
-  // has culture scores, CEO approval, pros/cons. Primary replacement for DDG.
+  // Strategy 2: Web search (SerpAPI / Google CSE) → extract review snippets and
+  // follow Glassdoor/Comparably URLs directly for structured data
+  const reviewSearchResults = await searchWeb(`"${companyName}" glassdoor OR comparably reviews rating culture employees`, 10);
+  for (const r of reviewSearchResults) {
+    const lower = r.link.toLowerCase();
+    // Extract any rating numbers from snippets (Google caches Glassdoor snippet text)
+    if (!data.overallRating) {
+      const rM = r.snippet.match(/(\d\.\d)\s*(?:out of 5|stars?|\/5)/i);
+      if (rM) data.overallRating = parseFloat(rM[1]);
+    }
+    if (!data.ceoApproval) {
+      const ceoM = r.snippet.match(/(\d+)%\s*(?:approve|approval)/i);
+      if (ceoM) data.ceoApproval = parseInt(ceoM[1]);
+    }
+    if (!data.reviewCount) {
+      const rcM = r.snippet.match(/([\d,]+)\s*reviews?/i);
+      if (rcM) data.reviewCount = parseInt(rcM[1].replace(/,/g, ''));
+    }
+    // Snippets often contain pro/con sentences
+    if (data.pros.length < 5 && /great|excellent|good|strong|best|love|amazing/i.test(r.snippet)) data.pros.push(r.snippet.slice(0, 200));
+    if (data.cons.length < 5 && /poor|bad|toxic|difficult|slow|burnout|underpaid/i.test(r.snippet)) data.cons.push(r.snippet.slice(0, 200));
+    // Track Glassdoor/Comparably URLs to visit for full data below
+    if (lower.includes('glassdoor.com') || lower.includes('comparably.com')) {
+      sources.push({ url: r.link, type: 'glassdoor', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
+    }
+  }
+
+  // Comparably — server-side rendered, less aggressive bot detection
   const comparablySlug = companyName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 
   const comparablyReviewsUrl = `https://www.comparably.com/companies/${comparablySlug}/reviews`;
