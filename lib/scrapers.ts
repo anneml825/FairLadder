@@ -43,22 +43,33 @@ export async function scrapeGoogleNews(
   const sources: ScrapedSource[] = [];
 
   const queries = [
-    `${companyName} layoffs OR "reduction in force" OR restructuring OR acquisition OR pivot`,
-    `${companyName} CEO OR executives OR leadership OR "executive departure" OR resignation`,
-    `${companyName} culture OR employees OR toxic OR "great place to work" OR reviews`,
-    `${companyName} salary OR compensation OR pay OR raise OR bonus OR "pay cut"`,
-    `${companyName} interview OR hiring OR "laid off" OR fired OR downsizing`,
-    `${companyName} revenue OR earnings OR profit OR "quarterly results" OR IPO OR valuation`,
-    `${companyName} funding OR "series A" OR "series B" OR "series C" OR investment OR "raised"`,
-    `${companyName} "press release" OR announcement OR partnership OR product OR expansion`,
-    `${companyName} lawsuit OR regulatory OR investigation OR fine OR SEC OR DOJ`,
-    `${companyName} "return to office" OR RTO OR remote OR "work from home" OR hybrid`,
+    // Company health & stability
+    `${companyName} layoffs OR "reduction in force" OR "job cuts" OR downsizing OR restructuring`,
+    `${companyName} acquisition OR merger OR "going public" OR IPO OR SPAC OR valuation`,
+    `${companyName} revenue OR earnings OR profit OR "quarterly results" OR "annual report"`,
+    `${companyName} funding OR "series A" OR "series B" OR "series C" OR investment OR raised`,
+    // Leadership & culture
+    `${companyName} CEO OR CTO OR CFO OR "executive departure" OR resignation OR "new leadership"`,
+    `${companyName} culture OR "employee reviews" OR "work environment" OR "great place to work"`,
+    `${companyName} "work life balance" OR overtime OR burnout OR "crunch" OR "long hours"`,
+    `${companyName} benefits OR "health insurance" OR 401k OR "parental leave" OR perks`,
+    // Hiring & workforce
+    `${companyName} hiring OR headcount OR "team growth" OR "new office" OR expansion`,
+    `${companyName} "return to office" OR RTO OR remote OR hybrid OR "work from home"`,
+    `site:glassdoor.com "${companyName}" reviews rating culture`,
+    // Legal & regulatory
+    `${companyName} lawsuit OR regulatory OR investigation OR fine OR SEC OR DOJ OR NLRB`,
+    // Role-specific pay
+    `${companyName} salary OR compensation OR pay OR raise OR bonus OR equity OR "pay band"`,
+    // Product & strategy (future health signal)
+    `${companyName} product OR launch OR partnership OR "market share" OR competitor OR pivot`,
   ];
 
-  // Add role-specific queries when a role is known
+  // Role-specific queries
   if (role && role.length > 2) {
-    queries.push(`${companyName} "${role}" team hiring department`);
-    queries.push(`"${role}" ${companyName} salary pay compensation range`);
+    queries.push(`${companyName} "${role}" team hiring growth`);
+    queries.push(`"${role}" ${companyName} salary compensation pay band`);
+    queries.push(`"${role}" salary "${companyName}" levels experience`);
   }
 
   for (const q of queries) {
@@ -186,10 +197,40 @@ export async function scrapeReddit(
     posts.forEach(addPost);
   }
 
-  // Subreddit-targeted searches (more specific)
-  for (const sub of ['cscareerquestions', 'jobs', 'careerguidance', 'recruiting']) {
+  // Subreddit-targeted searches — cast wide net across professional communities
+  const subreddits = ['cscareerquestions', 'jobs', 'careerguidance', 'recruiting',
+    'ExperiencedDevs', 'softwareengineering', 'datascience', 'personalfinance', 'AskHR', 'remotework'];
+  for (const sub of subreddits) {
     const posts = await fetchRedditSearch(`"${companyName}"`, sub);
     posts.forEach(addPost);
+  }
+
+  // Try old.reddit.com search — server-side rendered HTML, fewer bot filters than JSON API
+  if (threads.length < 5) {
+    for (const q of [
+      `"${companyName}" employees culture`,
+      `"${companyName}" salary interview`,
+    ]) {
+      const html = await fetchHtml(
+        `https://old.reddit.com/search?q=${encodeURIComponent(q)}&sort=relevance&t=year`,
+        { 'User-Agent': REDDIT_UA, Accept: 'text/html' },
+      );
+      if (html && html.length > 1000) {
+        // old.reddit search results have direct post links
+        const $ = cheerio.load(html);
+        $('a.search-title').each((_, el) => {
+          const href = $(el).attr('href') || '';
+          const title = $(el).text().trim();
+          const url = href.startsWith('http') ? href : `https://www.reddit.com${href}`;
+          if (!seen.has(url) && /reddit\.com\/r\//.test(url)) {
+            seen.add(url);
+            const subredditM = url.match(/reddit\.com\/r\/([^/]+)/);
+            threads.push({ title, url, subreddit: subredditM?.[1] || 'reddit', score: 0, commentCount: 0, topComments: [], body: '' });
+            sources.push({ url, type: 'reddit', title: title.slice(0, 120), timestamp: new Date().toISOString() });
+          }
+        });
+      }
+    }
   }
 
   // Fallback: Google News RSS for site:reddit.com results
@@ -497,6 +538,41 @@ export async function scrapeLevels(
     });
   }
 
+  // Direct salary site fetches — ZipRecruiter and Indeed have static-ish salary pages
+  const roleSlug = role.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+
+  // ZipRecruiter
+  const zipUrl = `https://www.ziprecruiter.com/Salaries/${roleSlug}-Salary`;
+  const zipHtml = await fetchHtml(zipUrl);
+  if (zipHtml && zipHtml.length > 2000) {
+    const $z = cheerio.load(zipHtml);
+    const bodyText = $z('body').text().replace(/\s+/g, ' ');
+    const avgM = bodyText.match(/average[^$]{0,30}\$\s*([\d,]+)/i) || bodyText.match(/\$\s*([\d]{2,3},\d{3})\s*(?:per year|annually|average)/i);
+    if (avgM) {
+      const avg = parseInt(avgM[1].replace(/,/g, ''));
+      if (avg >= 25000 && avg <= 600000) {
+        data.targetRoleSalaries.push({ company: 'ZipRecruiter', role, base: avg, totalComp: Math.round(avg * 1.2), location });
+        sources.push({ url: zipUrl, type: 'levels', title: `${role} Salary - ZipRecruiter`, timestamp: new Date().toISOString() });
+      }
+    }
+  }
+
+  // Indeed Salaries
+  const indeedUrl = `https://www.indeed.com/career/${roleSlug}/salaries`;
+  const indeedHtml = await fetchHtml(indeedUrl, { 'Accept-Language': 'en-US,en;q=0.9' });
+  if (indeedHtml && indeedHtml.length > 2000 && !indeedHtml.includes('sign in') && !indeedHtml.includes('Sign in')) {
+    const $i = cheerio.load(indeedHtml);
+    const bodyText = $i('body').text().replace(/\s+/g, ' ');
+    const avgM = bodyText.match(/average(?:\s+base)?\s+salary[^$]{0,30}\$\s*([\d,]+)/i) || bodyText.match(/\$\s*([\d]{2,3},\d{3})\s*(?:per year|\/yr|annually)/i);
+    if (avgM) {
+      const avg = parseInt(avgM[1].replace(/,/g, ''));
+      if (avg >= 25000 && avg <= 600000) {
+        data.comparableSalaries.push({ company: 'Indeed', base: avg, totalComp: Math.round(avg * 1.2) });
+        sources.push({ url: indeedUrl, type: 'levels', title: `${role} Salaries - Indeed`, timestamp: new Date().toISOString() });
+      }
+    }
+  }
+
   return { data, sources };
 }
 
@@ -692,6 +768,18 @@ export async function scrapeSEC(
       if (headM) data.financialSignals.push(...headM.slice(0, 1));
     });
     sources.push({ url: `https://news.google.com/rss/search?q=${encodeURIComponent(fundQuery)}`, type: 'sec', title: `${companyName} Funding`, timestamp: new Date().toISOString() });
+  }
+
+  // Hiring velocity signal — news about open roles is a health/growth indicator
+  const hiringQuery = `"${companyName}" hiring "open roles" OR "job openings" OR headcount OR "growing team"`;
+  const hiringRss = await fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(hiringQuery)}&hl=en-US&gl=US&ceid=US:en`);
+  if (hiringRss && hiringRss.length > 500) {
+    const $h = cheerio.load(hiringRss, { xmlMode: true });
+    $h('item').each((_, el) => {
+      const combined = `${$h(el).find('title').text()} ${$h(el).find('description').text().replace(/<[^>]*>/g, '')}`;
+      const headM = combined.match(/(?:hiring|added|growing by|expanded by)[^,\n]{0,30}(\d[\d,]+)\s+(?:employees|workers|people|jobs)/gi);
+      if (headM) data.financialSignals.push(...headM.slice(0, 2).map(m => m.trim().slice(0, 120)));
+    });
   }
 
   // Also try EDGAR full-text search
