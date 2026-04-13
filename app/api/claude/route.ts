@@ -161,7 +161,7 @@ Return ONLY valid JSON, no markdown fences, no text outside the JSON object:
           },
           body: JSON.stringify({
             model: 'claude-sonnet-4-6',
-            max_tokens: 4096,
+            max_tokens: 8192,
             stream: true,
             system: systemPrompt,
             messages: [{ role: 'user', content: userPrompt }],
