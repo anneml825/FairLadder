@@ -96,67 +96,67 @@ export async function scrapeGoogleNews(
 }
 
 // ── REDDIT ───────────────────────────────────────────────────────────────────
-// Reddit's JSON API blocks datacenter IPs. We search DuckDuckGo and Google News
-// for reddit.com results. DDG wraps links in redirect URLs (uddg= param) so we
-// extract Reddit URLs via regex on raw HTML rather than href selectors.
+// Use Reddit's native search.json API with a bot-identifying User-Agent.
+// Reddit is more permissive with the proper UA format than DDG Lite which
+// blocks datacenter IPs outright. Google News RSS is the fallback.
 
+const REDDIT_UA = 'server:fairladder-job-analysis:1.0 (job research tool)';
 const REDDIT_URL_RE = /https?:\/\/(?:www\.)?reddit\.com\/r\/[a-zA-Z0-9_]+\/comments\/[a-zA-Z0-9]+\/[^"'\s<>&]*/g;
 
 function extractRedditThreads(
-  html: string,
+  xml: string,
   seen: Set<string>,
   threads: RedditThread[],
   sources: ScrapedSource[],
 ) {
-  // 1. Regex the raw HTML — catches URLs inside DDG's uddg= redirect params too
-  const rawUrls = [...new Set((html.match(REDDIT_URL_RE) || []).map(u => u.replace(/\/$/, '')))];
-
-  // 2. Also decode any uddg= params to surface reddit URLs hidden in redirects
-  const uddgRe = /uddg=(https?%3A%2F%2F[^&"'\s]+reddit[^&"'\s]+)/gi;
-  for (const m of html.matchAll(uddgRe)) {
-    try {
-      const decoded = decodeURIComponent(m[1]);
-      if (/reddit\.com\/r\/\w+\/comments\//.test(decoded)) rawUrls.push(decoded.replace(/\/$/, ''));
-    } catch { /* skip */ }
-  }
-
-  // 3. Load cheerio to pair URLs with nearby title/snippet text
-  const $ = cheerio.load(html);
-  const linkTexts: Record<string, string> = {};
-  const linkSnippets: Record<string, string> = {};
-  $('a').each((_, el) => {
-    const href = $(el).attr('href') || '';
-    const text = $(el).text().trim();
-    const snippet = $(el).closest('tr').next('tr').find('td').text().trim();
-    // Check if href is or contains a reddit URL
-    if (href.includes('reddit.com')) {
-      const m = href.match(REDDIT_URL_RE);
-      if (m) { linkTexts[m[0]] = text; linkSnippets[m[0]] = snippet; }
-    }
-    // Also match on link text that looks like a reddit thread title
-    for (const url of rawUrls) {
-      if (!linkTexts[url] && text.length > 8 && href.includes(encodeURIComponent('reddit.com'))) {
-        linkTexts[url] = text;
-        linkSnippets[url] = snippet;
-      }
-    }
+  // For Google News RSS XML, extract any embedded reddit.com URLs
+  const rawUrls = [...new Set((xml.match(REDDIT_URL_RE) || []).map(u => u.replace(/\/$/, '')))];
+  const $ = cheerio.load(xml, { xmlMode: true });
+  $('item').each((_, el) => {
+    const link = $(el).find('link').text().trim() || $(el).find('guid').text().trim();
+    const title = $(el).find('title').text().trim();
+    if (link && REDDIT_URL_RE.test(link)) rawUrls.push(link.replace(/\/$/, ''));
+    REDDIT_URL_RE.lastIndex = 0;
+    // description may contain reddit URLs
+    const desc = $(el).find('description').text();
+    const inDesc = desc.match(REDDIT_URL_RE) || [];
+    rawUrls.push(...inDesc.map(u => u.replace(/\/$/, '')));
+    if (title && link) { /* title available if needed */ }
   });
-
-  for (const url of rawUrls) {
+  for (const url of [...new Set(rawUrls)]) {
     if (seen.has(url)) continue;
     seen.add(url);
-    const title = linkTexts[url] || url.split('/').slice(-1)[0].replace(/_/g, ' ') || url;
-    const snippet = linkSnippets[url] || '';
     const subredditM = url.match(/reddit\.com\/r\/([^/]+)/);
-    threads.push({
-      title: title.slice(0, 200), url,
-      subreddit: subredditM?.[1] || 'reddit',
-      score: 0, commentCount: 0,
-      topComments: snippet ? [snippet.slice(0, 400)] : [],
-      body: snippet.slice(0, 400),
-    });
-    sources.push({ url, type: 'reddit', title: title.slice(0, 120), timestamp: new Date().toISOString() });
+    const slug = url.split('/').slice(-1)[0].replace(/_/g, ' ');
+    threads.push({ title: slug.slice(0, 200), url, subreddit: subredditM?.[1] || 'reddit', score: 0, commentCount: 0, topComments: [], body: '' });
+    sources.push({ url, type: 'reddit', title: slug.slice(0, 120), timestamp: new Date().toISOString() });
   }
+}
+
+async function fetchRedditSearch(
+  query: string,
+  subreddit?: string,
+): Promise<Array<{ title: string; url: string; subreddit: string; score: number; num_comments: number; selftext: string }>> {
+  try {
+    const base = subreddit
+      ? `https://www.reddit.com/r/${subreddit}/search.json`
+      : `https://www.reddit.com/search.json`;
+    const params = new URLSearchParams({ q: query, sort: 'relevance', t: 'year', limit: '10', ...(subreddit ? { restrict_sr: '1' } : {}) });
+    const res = await axios.get(`${base}?${params}`, {
+      headers: { 'User-Agent': REDDIT_UA, Accept: 'application/json' },
+      timeout: 10000,
+    });
+    type RedditChild = { data: { title: string; permalink: string; subreddit: string; score: number; num_comments: number; selftext: string } };
+    const children: RedditChild[] = res.data?.data?.children ?? [];
+    return children.map(c => ({
+      title: c.data.title ?? '',
+      url: `https://www.reddit.com${c.data.permalink}`,
+      subreddit: c.data.subreddit ?? '',
+      score: c.data.score ?? 0,
+      num_comments: c.data.num_comments ?? 0,
+      selftext: c.data.selftext ?? '',
+    }));
+  } catch { return []; }
 }
 
 export async function scrapeReddit(
@@ -167,28 +167,34 @@ export async function scrapeReddit(
   const sources: ScrapedSource[] = [];
   const seen = new Set<string>();
 
-  // DuckDuckGo searches — "company reddit" style finds threads without site: restriction
-  // which is more reliable than site:reddit.com on DDG Lite
-  const ddgQueries = [
-    `"${companyName}" reddit employees culture work experience`,
-    `"${companyName}" reddit salary compensation pay`,
-    `"${companyName}" reddit layoffs interview hiring`,
-    role ? `"${companyName}" "${role}" reddit experience` : `"${companyName}" reddit career advice`,
-  ];
+  const addPost = (p: { title: string; url: string; subreddit: string; score: number; num_comments: number; selftext: string }) => {
+    if (seen.has(p.url)) return;
+    seen.add(p.url);
+    threads.push({ title: p.title, url: p.url, subreddit: p.subreddit, score: p.score, commentCount: p.num_comments, topComments: [], body: p.selftext.slice(0, 400) });
+    sources.push({ url: p.url, type: 'reddit', title: p.title.slice(0, 120), timestamp: new Date().toISOString() });
+  };
 
-  for (const q of ddgQueries) {
-    const html = await fetchHtml(
-      `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(q)}`,
-      { Referer: 'https://lite.duckduckgo.com/' }
-    );
-    if (html && html.length > 500) extractRedditThreads(html, seen, threads, sources);
+  // Primary: Reddit's own search API
+  const queries = [
+    `"${companyName}" employees culture work`,
+    `"${companyName}" salary compensation pay`,
+    `"${companyName}" layoffs interview hiring`,
+    role ? `"${companyName}" "${role}"` : `"${companyName}" career`,
+  ];
+  for (const q of queries) {
+    const posts = await fetchRedditSearch(q);
+    posts.forEach(addPost);
   }
 
-  // Google News RSS — surfaces Reddit posts that got news coverage + direct reddit links
-  for (const q of [`"${companyName}" reddit`, `"${companyName}" site:reddit.com`]) {
-    const rssXml = await fetchHtml(
-      `https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=en-US&gl=US&ceid=US:en`
-    );
+  // Subreddit-targeted searches (more specific)
+  for (const sub of ['cscareerquestions', 'jobs', 'careerguidance', 'recruiting']) {
+    const posts = await fetchRedditSearch(`"${companyName}"`, sub);
+    posts.forEach(addPost);
+  }
+
+  // Fallback: Google News RSS for site:reddit.com results
+  for (const q of [`"${companyName}" site:reddit.com`, `"${companyName}" reddit employees`]) {
+    const rssXml = await fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=en-US&gl=US&ceid=US:en`);
     if (rssXml) extractRedditThreads(rssXml, seen, threads, sources);
   }
 
@@ -434,61 +440,59 @@ export async function scrapeLevels(
   const sources: ScrapedSource[] = [];
   const data: LevelsData = { targetRoleSalaries: [], comparableSalaries: [] };
 
-  // Search DuckDuckGo for company-specific salary data
-  const companyQuery = `${companyName} ${role} salary compensation`;
-  const ddgHtml = await fetchHtml(
-    `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(companyQuery)}`,
-    { Referer: 'https://lite.duckduckgo.com/' }
-  );
-  if (ddgHtml && ddgHtml.length > 1000) {
-    const plain = ddgHtml.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
-    const salaries = extractSalaries(plain);
+  // Google News RSS — company-specific salary articles (DDG Lite blocks datacenter IPs)
+  const companyQuery = `"${companyName}" "${role}" salary compensation`;
+  const rss1 = await fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(companyQuery)}&hl=en-US&gl=US&ceid=US:en`);
+  if (rss1 && rss1.length > 500) {
+    const $c = cheerio.load(rss1, { xmlMode: true });
+    const allText: string[] = [];
+    $c('item').each((_, el) => {
+      const title = $c(el).find('title').text();
+      const desc = $c(el).find('description').text().replace(/<[^>]*>/g, '');
+      allText.push(`${title} ${desc}`);
+    });
+    const salaries = extractSalaries(allText.join(' '));
     if (salaries.length > 0) {
       const avg = Math.round(salaries.reduce((a, b) => a + b, 0) / salaries.length);
       data.targetRoleSalaries.push({ company: companyName, role, base: avg, totalComp: Math.round(avg * 1.3), location });
     }
-    sources.push({ url: `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(companyQuery)}`, type: 'levels', title: `${companyName} ${role} Salary Search`, timestamp: new Date().toISOString() });
+    sources.push({ url: `https://news.google.com/rss/search?q=${encodeURIComponent(companyQuery)}`, type: 'levels', title: `${companyName} ${role} Salary`, timestamp: new Date().toISOString() });
   }
 
-  // Search Google News for salary articles mentioning the company/role
-  const newsQuery = `${role} ${location} salary compensation 2024 2025`;
-  const newsRss = `https://news.google.com/rss/search?q=${encodeURIComponent(newsQuery)}&hl=en-US&gl=US&ceid=US:en`;
-  const newsXml = await fetchHtml(newsRss);
-  if (newsXml) {
-    const $n = cheerio.load(newsXml, { xmlMode: true });
+  // Market comps — role + location salary news
+  const newsQuery = `"${role}" salary compensation ${location} 2024 2025`;
+  const rss2 = await fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(newsQuery)}&hl=en-US&gl=US&ceid=US:en`);
+  if (rss2 && rss2.length > 500) {
+    const $n = cheerio.load(rss2, { xmlMode: true });
     $n('item').each((_, el) => {
-      const desc = $n(el).find('description').text().replace(/<[^>]*>/g, '');
       const title = $n(el).find('title').text();
+      const desc = $n(el).find('description').text().replace(/<[^>]*>/g, '');
       const link = $n(el).find('link').text().trim() || $n(el).find('guid').text().trim();
       const salaries = extractSalaries(`${title} ${desc}`);
-      if (salaries.length > 0 && data.comparableSalaries.length < 6) {
+      if (salaries.length > 0 && data.comparableSalaries.length < 8) {
         const avg = Math.round(salaries.reduce((a, b) => a + b, 0) / salaries.length);
         const source = $n(el).find('source').text().trim() || 'News';
         data.comparableSalaries.push({ company: source, base: avg, totalComp: Math.round(avg * 1.3) });
-      }
-      if (link && data.comparableSalaries.length > 0) {
-        sources.push({ url: link, type: 'levels', title: title.slice(0, 80), timestamp: new Date().toISOString() });
+        if (link) sources.push({ url: link, type: 'levels', title: title.slice(0, 80), timestamp: new Date().toISOString() });
       }
     });
   }
 
-  // Second DuckDuckGo search for broader market comps
-  const marketQuery = `${role} average salary ${location} site:salary.com OR site:glassdoor.com OR site:builtin.com`;
-  const ddg2Html = await fetchHtml(
-    `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(marketQuery)}`,
-    { Referer: 'https://lite.duckduckgo.com/' }
-  );
-  if (ddg2Html && ddg2Html.length > 1000) {
-    const $d = cheerio.load(ddg2Html);
-    $d('a[href^="http"]').each((_, el) => {
-      const href = $d(el).attr('href') || '';
-      const snippet = $d(el).closest('tr').next('tr').text().trim();
-      const salaries = extractSalaries(snippet);
+  // Broader market comps — generic role salary data
+  const marketQuery = `"${role}" average salary 2024 2025 annual compensation`;
+  const rss3 = await fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(marketQuery)}&hl=en-US&gl=US&ceid=US:en`);
+  if (rss3 && rss3.length > 500) {
+    const $m = cheerio.load(rss3, { xmlMode: true });
+    $m('item').each((_, el) => {
+      const title = $m(el).find('title').text();
+      const desc = $m(el).find('description').text().replace(/<[^>]*>/g, '');
+      const link = $m(el).find('link').text().trim() || $m(el).find('guid').text().trim();
+      const salaries = extractSalaries(`${title} ${desc}`);
       if (salaries.length > 0 && data.comparableSalaries.length < 8) {
         const avg = Math.round(salaries.reduce((a, b) => a + b, 0) / salaries.length);
-        const compName = href.match(/(?:salary\.com|glassdoor\.com|builtin\.com)/)?.[0] || 'Market data';
-        data.comparableSalaries.push({ company: compName, base: avg, totalComp: Math.round(avg * 1.3) });
-        sources.push({ url: href, type: 'levels', title: `${role} Market Salary`, timestamp: new Date().toISOString() });
+        const source = $m(el).find('source').text().trim() || 'Market data';
+        data.comparableSalaries.push({ company: source, base: avg, totalComp: Math.round(avg * 1.3) });
+        if (link) sources.push({ url: link, type: 'levels', title: title.slice(0, 80), timestamp: new Date().toISOString() });
       }
     });
   }
@@ -513,17 +517,17 @@ export async function scrapeBLS(
     locationData: '',
   };
 
-  // Strategy 1: DuckDuckGo → BLS pages include median wage in their search snippets
+  // Strategy 1: Google News RSS — BLS press releases contain median wage sentences
   // e.g. "The median annual wage for software developers was $127,260 in May 2023."
-  const ddgQuery = `${role} median annual wage salary site:bls.gov`;
-  const ddgHtml = await fetchHtml(
-    `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(ddgQuery)}`,
-    { Referer: 'https://lite.duckduckgo.com/' }
-  );
-  if (ddgHtml && ddgHtml.length > 1000) {
-    const plain = ddgHtml.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
-
-    // "median annual wage for X was $127,260" or "median pay: $127,260"
+  const newsQuery = `"${role}" median annual wage salary 2023 2024`;
+  const newsRss = await fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(newsQuery)}&hl=en-US&gl=US&ceid=US:en`);
+  if (newsRss && newsRss.length > 500) {
+    const $b = cheerio.load(newsRss, { xmlMode: true });
+    const allText: string[] = [];
+    $b('item').each((_, el) => {
+      allText.push(`${$b(el).find('title').text()} ${$b(el).find('description').text().replace(/<[^>]*>/g, '')}`);
+    });
+    const plain = allText.join(' ');
     const medianM =
       plain.match(/median annual (?:wage|salary)[^$]*\$\s*([\d,]+)/i) ||
       plain.match(/median pay[^$]*\$\s*([\d,]+)/i) ||
@@ -532,30 +536,25 @@ export async function scrapeBLS(
       const val = parseInt(medianM[1].replace(/,/g, ''));
       if (val >= 25000 && val <= 600000) data.medianSalary = val;
     }
-
-    sources.push({
-      url: `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(ddgQuery)}`,
-      type: 'bls',
-      title: `${role} — BLS Wage Data`,
-      timestamp: new Date().toISOString(),
-    });
+    sources.push({ url: `https://news.google.com/rss/search?q=${encodeURIComponent(newsQuery)}`, type: 'bls', title: `${role} — Wage Data`, timestamp: new Date().toISOString() });
   }
 
-  // Location-specific salary search
+  // Location-specific salary news
   if (location && location !== 'Remote') {
-    const locQuery = `${role} salary ${location} average annual wage`;
-    const locHtml = await fetchHtml(
-      `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(locQuery)}`,
-      { Referer: 'https://lite.duckduckgo.com/' }
-    );
-    if (locHtml && locHtml.length > 1000) {
-      const plain = locHtml.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
-      const locSalM = plain.match(/\$\s*([\d]{2,3},\d{3})\s*(?:per year|annually|average|median)/i);
+    const locQuery = `"${role}" salary "${location}" average annual`;
+    const locRss = await fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(locQuery)}&hl=en-US&gl=US&ceid=US:en`);
+    if (locRss && locRss.length > 500) {
+      const $l = cheerio.load(locRss, { xmlMode: true });
+      const allText: string[] = [];
+      $l('item').each((_, el) => {
+        allText.push(`${$l(el).find('title').text()} ${$l(el).find('description').text().replace(/<[^>]*>/g, '')}`);
+      });
+      const locSalM = allText.join(' ').match(/\$\s*([\d]{2,3},\d{3})\s*(?:per year|annually|average|median)/i);
       if (locSalM) {
         const val = parseInt(locSalM[1].replace(/,/g, ''));
         if (val >= 25000 && val <= 600000) data.locationData = `${location} average: $${val.toLocaleString()}`;
       }
-      sources.push({ url: `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(locQuery)}`, type: 'bls', title: `${role} Salary in ${location}`, timestamp: new Date().toISOString() });
+      sources.push({ url: `https://news.google.com/rss/search?q=${encodeURIComponent(locQuery)}`, type: 'bls', title: `${role} Salary in ${location}`, timestamp: new Date().toISOString() });
     }
   }
 
@@ -665,37 +664,34 @@ export async function scrapeSEC(
     } catch { /* JSON parse error */ }
   }
 
-  // Financial strength signals via DDG
-  const finQuery = `${companyName} revenue profit financial results annual report 2024 2025`;
-  const finHtml = await fetchHtml(
-    `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(finQuery)}`,
-    { Referer: 'https://lite.duckduckgo.com/' }
-  );
-  if (finHtml && finHtml.length > 1000) {
-    const plain = finHtml.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
-    // Revenue signals
-    const revM = plain.match(/revenue[^$]*\$\s*([\d.]+)\s*(billion|million|B|M)\b/gi);
-    if (revM) data.financialSignals.push(...revM.slice(0, 3).map(m => m.trim().slice(0, 120)));
-    // Profit/loss
-    const profitM = plain.match(/(?:profit|loss|net income)[^$\n]*\$\s*([\d.]+)\s*(?:billion|million)/gi);
-    if (profitM) data.financialSignals.push(...profitM.slice(0, 2).map(m => m.trim().slice(0, 120)));
-    sources.push({ url: `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(finQuery)}`, type: 'sec', title: `${companyName} Financial Results`, timestamp: new Date().toISOString() });
+  // Financial signals via Google News RSS (DDG Lite blocks datacenter IPs)
+  const finQuery = `"${companyName}" revenue earnings profit financial results 2024 2025`;
+  const finRss = await fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(finQuery)}&hl=en-US&gl=US&ceid=US:en`);
+  if (finRss && finRss.length > 500) {
+    const $fin = cheerio.load(finRss, { xmlMode: true });
+    $fin('item').each((_, el) => {
+      const combined = `${$fin(el).find('title').text()} ${$fin(el).find('description').text().replace(/<[^>]*>/g, '')}`;
+      const revM = combined.match(/revenue[^$\n]*\$\s*([\d.]+)\s*(billion|million|B|M)\b/gi);
+      if (revM) data.financialSignals.push(...revM.slice(0, 2).map(m => m.trim().slice(0, 120)));
+      const profitM = combined.match(/(?:profit|loss|net income)[^$\n]*\$\s*([\d.]+)\s*(?:billion|million)/gi);
+      if (profitM) data.financialSignals.push(...profitM.slice(0, 1).map(m => m.trim().slice(0, 120)));
+    });
+    sources.push({ url: `https://news.google.com/rss/search?q=${encodeURIComponent(finQuery)}`, type: 'sec', title: `${companyName} Financial Results`, timestamp: new Date().toISOString() });
   }
 
-  // Funding and investment history via DDG
-  const fundQuery = `${companyName} funding raised investment series valuation crunchbase`;
-  const fundHtml = await fetchHtml(
-    `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(fundQuery)}`,
-    { Referer: 'https://lite.duckduckgo.com/' }
-  );
-  if (fundHtml && fundHtml.length > 1000) {
-    const plain = fundHtml.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
-    const fundM = plain.match(/(?:raised|funding|series|invested)[^$\n]*\$\s*([\d.]+)\s*(?:billion|million|B|M)[^\n]*/gi);
-    if (fundM) data.fundingSignals.push(...fundM.slice(0, 4).map(m => m.trim().slice(0, 150)));
-    // Headcount signals
-    const headM = plain.match(/(\d[\d,]+)\s+employees/gi);
-    if (headM) data.financialSignals.push(...headM.slice(0, 2));
-    sources.push({ url: `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(fundQuery)}`, type: 'sec', title: `${companyName} Funding & Investors`, timestamp: new Date().toISOString() });
+  // Funding and investment signals via Google News RSS
+  const fundQuery = `"${companyName}" funding raised investment series valuation`;
+  const fundRss = await fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(fundQuery)}&hl=en-US&gl=US&ceid=US:en`);
+  if (fundRss && fundRss.length > 500) {
+    const $fund = cheerio.load(fundRss, { xmlMode: true });
+    $fund('item').each((_, el) => {
+      const combined = `${$fund(el).find('title').text()} ${$fund(el).find('description').text().replace(/<[^>]*>/g, '')}`;
+      const fundM = combined.match(/(?:raised|funding|series|invested)[^$\n]*\$\s*([\d.]+)\s*(?:billion|million|B|M)[^\n]*/gi);
+      if (fundM) data.fundingSignals.push(...fundM.slice(0, 2).map(m => m.trim().slice(0, 150)));
+      const headM = combined.match(/(\d[\d,]+)\s+employees/gi);
+      if (headM) data.financialSignals.push(...headM.slice(0, 1));
+    });
+    sources.push({ url: `https://news.google.com/rss/search?q=${encodeURIComponent(fundQuery)}`, type: 'sec', title: `${companyName} Funding`, timestamp: new Date().toISOString() });
   }
 
   // Also try EDGAR full-text search

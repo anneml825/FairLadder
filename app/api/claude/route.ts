@@ -93,14 +93,14 @@ export async function POST(req: NextRequest) {
       severity: fp.severity as 'red' | 'yellow' | 'grey',
     }));
 
-  const systemPrompt = `You are a brutally honest career intelligence analyst. Give candidates information companies already have but candidates don't. Never soften bad news. Call out red flags plainly. Give genuine credit where deserved. Sound like advice from a brilliant friend in recruiting — honest, specific, immediately actionable.
+  const systemPrompt = `You are a brutally honest career intelligence analyst. Give candidates the information companies already have but candidates don't. Never soften bad news. Sound like advice from a sharp friend in recruiting — honest, specific, actionable.
 
-FORMATTING RULES — strictly follow these:
-- All text fields (companyIntelligence, roleIntelligence, salaryAnalysis, offerAnalysis) must use short paragraphs of 2-3 sentences max, separated by blank lines. Use **bold** for key facts and numbers. Use bullet points (starting with •) for lists of 3+ items. Never write a wall of unbroken text.
-- Never say "cannot determine", "data unavailable", or "insufficient data". Always reason from the signals you have.
-- All numeric fields in the JSON (radar scores, salary figures, percentiles) must be grounded in the actual scraped data provided. Do not invent numbers. If Glassdoor returned a 3.8 rating, use it. If BLS median is $112,000, use it. If you have no hard number, estimate conservatively and note it is an estimate in the text field, not in the numeric field.
-- Radar scores must reflect the actual data: low Glassdoor rating = low culture score, layoff signals = low financial stability, etc. Do not default everything to 5.
-- Salary intelligence figures must be derived from BLS and Levels.fyi data provided. Do not fabricate ranges.`;
+FORMATTING RULES — strictly follow:
+- Text fields (companyIntelligence, roleIntelligence, salaryAnalysis, offerAnalysis): max 3-4 SHORT sentences total. No essays. Use **bold** for key facts/numbers. Bullet points (•) for 3+ items only.
+- Never say "cannot determine" or "data unavailable". Always reason from available signals.
+- Numeric fields (radar scores, salaries): ground in actual scraped data. Glassdoor 3.8 → use 3.8. BLS $112k → use it. Estimate conservatively if missing, note it in text only.
+- Radar scores must reflect data: low Glassdoor = low culture, layoff signals = low financial stability. Do not default to 5.
+- Salary figures must derive from BLS/Levels data provided.`;
 
   const userPrompt = `Analyze this job opportunity. Be specific. Use real numbers. Never write "data unavailable" — always reason from available signals.
 
@@ -140,7 +140,7 @@ OFFER: ${request.offerText || 'not provided'}
 
 Return ONLY valid JSON, no markdown fences, no text outside the JSON object:
 
-{"verdict":"STRONG OPPORTUNITY","verdictExplanation":"one brutal sentence","bottomLine":"2-3 sentences final honest verdict","radarScores":{"financialStability":7,"culture":6,"leadership":5,"growthTrajectory":6,"retention":5,"transparency":4},"salaryIntelligence":{"marketMin":80000,"p25":95000,"median":115000,"p75":140000,"marketMax":175000,"offerValue":120000,"percentile":55,"verdict":"FAIR","analysis":"2-3 sentence salary assessment"},"timeline":[{"date":"2024-03","type":"layoff","title":"Short title","description":"one sentence","source":"source name"}],"redFlags":[{"severity":"critical","title":"Flag title","explanation":"practical impact for this candidate","icon":"🚨"}],"greenFlags":[{"title":"Flag title","explanation":"why genuinely good","icon":"✅"}],"roleScorecard":[{"dimension":"Title Accuracy","status":"green","explanation":"one line"},{"dimension":"Experience Requirements Realism","status":"yellow","explanation":"one line"},{"dimension":"Posting Age Signal","status":"green","explanation":"one line"},{"dimension":"Backfill vs New Role","status":"yellow","explanation":"one line"},{"dimension":"Remote Policy Reliability","status":"red","explanation":"one line"}],"sentimentWords":[{"text":"word","value":50,"sentiment":"positive"}],"negotiationPlaybook":${request.offerText ? '{"levers":[{"lever":"Base Salary","negotiable":true,"priority":1}],"openingLine":"exact words","pushbackResponse":"exact words","walkAwayRecommendation":"clear guidance"}' : 'null'},"companyIntelligence":"3-4 honest paragraphs","roleIntelligence":"2-3 paragraphs on role reality","salaryAnalysis":"2-3 paragraphs on salary","offerAnalysis":${request.offerText ? '"detailed offer breakdown"' : 'null'}}`;
+{"verdict":"STRONG OPPORTUNITY","verdictExplanation":"one brutal sentence","bottomLine":"2 sentences max","radarScores":{"financialStability":7,"culture":6,"leadership":5,"growthTrajectory":6,"retention":5,"transparency":4},"salaryIntelligence":{"marketMin":80000,"p25":95000,"median":115000,"p75":140000,"marketMax":175000,"offerValue":120000,"percentile":55,"verdict":"FAIR","analysis":"2 sentences max"},"timeline":[{"date":"2024-03","type":"layoff","title":"Short title","description":"one sentence","source":"source name"}],"redFlags":[{"severity":"critical","title":"Flag title","explanation":"one sentence practical impact","icon":"🚨"}],"greenFlags":[{"title":"Flag title","explanation":"one sentence why good","icon":"✅"}],"roleScorecard":[{"dimension":"Title Accuracy","status":"green","explanation":"one line"},{"dimension":"Experience Requirements Realism","status":"yellow","explanation":"one line"},{"dimension":"Posting Age Signal","status":"green","explanation":"one line"},{"dimension":"Backfill vs New Role","status":"yellow","explanation":"one line"},{"dimension":"Remote Policy Reliability","status":"red","explanation":"one line"}],"sentimentWords":[{"text":"word","value":50,"sentiment":"positive"}],"negotiationPlaybook":${request.offerText ? '{"levers":[{"lever":"Base Salary","negotiable":true,"priority":1}],"openingLine":"exact words","pushbackResponse":"exact words","walkAwayRecommendation":"one sentence"}' : 'null'},"companyIntelligence":"3-4 punchy sentences total covering health, culture, risk","roleIntelligence":"2-3 sentences on role reality","salaryAnalysis":"2-3 sentences on pay","offerAnalysis":${request.offerText ? '"2-3 sentence offer breakdown"' : 'null'}}`;
 
   const encoder = new TextEncoder();
 
@@ -161,7 +161,7 @@ Return ONLY valid JSON, no markdown fences, no text outside the JSON object:
           },
           body: JSON.stringify({
             model: 'claude-sonnet-4-6',
-            max_tokens: 8192,
+            max_tokens: 4096,
             stream: true,
             system: systemPrompt,
             messages: [{ role: 'user', content: userPrompt }],
