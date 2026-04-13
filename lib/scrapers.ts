@@ -19,6 +19,28 @@ const HEADERS = {
   Connection: 'keep-alive',
 };
 
+// ── SERPER.DEV ───────────────────────────────────────────────────────────────
+// Primary search API — 2,500 free searches, no credit card needed.
+
+async function searchSerper(query: string, num = 10): Promise<SerpResult[]> {
+  const key = process.env.SERPER_API_KEY;
+  if (!key) return [];
+  try {
+    const res = await axios.post(
+      'https://google.serper.dev/search',
+      { q: query, num },
+      { headers: { 'X-API-KEY': key, 'Content-Type': 'application/json' }, timeout: 12000 },
+    );
+    const results: Array<{ title?: string; link?: string; snippet?: string }> = res.data?.organic ?? [];
+    return results
+      .filter(r => r.link && r.title)
+      .map(r => ({ title: r.title ?? '', link: r.link ?? '', snippet: r.snippet ?? '' }));
+  } catch (e: unknown) {
+    console.error('Serper error:', (e as { message: string }).message);
+    return [];
+  }
+}
+
 // ── SERPAPI ──────────────────────────────────────────────────────────────────
 // Real Google search results via SerpAPI. Key is optional — all callers fall
 // back gracefully if SERPAPI_KEY is not set.
@@ -297,8 +319,9 @@ async function searchGoogle(query: string, num = 10): Promise<SerpResult[]> {
   }
 }
 
-// Unified web search — uses whichever key is available (SerpAPI preferred for quota reasons)
+// Unified web search — Serper.dev first (2,500 free), SerpAPI fallback (100/mo), then Google CSE
 async function searchWeb(query: string, num = 10): Promise<SerpResult[]> {
+  if (process.env.SERPER_API_KEY) return searchSerper(query, num);
   if (process.env.SERPAPI_KEY) return searchSerp(query, num);
   if (process.env.GOOGLE_SEARCH_API_KEY) return searchGoogle(query, num);
   return [];
