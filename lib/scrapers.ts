@@ -316,100 +316,101 @@ export async function scrapeGlassdoor(
     interviewDifficulty: null, interviewExperience: null, reviewCount: null,
   };
 
-  // Strategy 1: DuckDuckGo web search — finds Glassdoor snippets without hitting Glassdoor directly
-  const ddgQuery = `${companyName} glassdoor reviews rating employees`;
-  const ddgHtml = await fetchHtml(
-    `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(ddgQuery)}`,
-    { Referer: 'https://lite.duckduckgo.com/', 'Accept-Language': 'en-US,en;q=0.9' }
-  );
-  if (ddgHtml && ddgHtml.length > 1000) {
-    const plainText = ddgHtml.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
+  // Strategy 2: Comparably — server-side rendered, less aggressive bot detection,
+  // has culture scores, CEO approval, pros/cons. Primary replacement for DDG.
+  const comparablySlug = companyName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 
-    // Extract overall rating
-    const ratingM = plainText.match(/(\d\.\d)\s*(?:out of 5|stars?|\/5|rating)/i);
-    if (ratingM) data.overallRating = parseFloat(ratingM[1]);
-
-    // Extract review count
-    const rcM = plainText.match(/([\d,]+)\s*reviews?/i);
-    if (rcM) data.reviewCount = parseInt(rcM[1].replace(/,/g, ''));
-
-    // Extract CEO approval
-    const ceoM = plainText.match(/(\d+)%\s*(?:approve|approval)/i);
-    if (ceoM) data.ceoApproval = parseInt(ceoM[1]);
-
-    // Extract pros/cons from snippets
-    const $d = cheerio.load(ddgHtml);
-    $d('td, span, .result-snippet').each((_, el) => {
-      const t = $d(el).text().trim();
-      if (t.length < 30 || t.length > 350) return;
-      const lower = t.toLowerCase();
-      if (data.pros.length < 5 &&
-        (lower.includes('great') || lower.includes('good culture') || lower.includes('benefits') ||
-         lower.includes('opportunity') || lower.includes('learning') || lower.includes('flexible'))) {
-        data.pros.push(t.slice(0, 200));
-      }
-      if (data.cons.length < 5 &&
-        (lower.includes('bad') || lower.includes('poor management') || lower.includes('toxic') ||
-         lower.includes('work-life') || lower.includes('underpaid') || lower.includes('turnover'))) {
-        data.cons.push(t.slice(0, 200));
-      }
-    });
-
-    sources.push({
-      url: `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(ddgQuery)}`,
-      type: 'glassdoor',
-      title: `${companyName} Reviews - Web Search`,
-      timestamp: new Date().toISOString(),
-    });
-  }
-
-  // CEO info and approval via DDG
-  const ceoQuery = `${companyName} CEO leadership approval rating`;
-  const ceoHtml = await fetchHtml(
-    `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(ceoQuery)}`,
-    { Referer: 'https://lite.duckduckgo.com/' }
-  );
-  if (ceoHtml && ceoHtml.length > 1000) {
-    const plain = ceoHtml.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
-    // CEO name patterns: "CEO John Smith" or "John Smith, CEO"
-    const ceoM =
-      plain.match(/(?:CEO|Chief Executive)[,\s]+([A-Z][a-z]+ [A-Z][a-z]+)/i) ||
-      plain.match(/([A-Z][a-z]+ [A-Z][a-z]+)[,\s]+(?:is |as )?(?:CEO|Chief Executive)/i);
-    if (ceoM) data.ceoName = ceoM[1].trim();
+  const comparablyReviewsUrl = `https://www.comparably.com/companies/${comparablySlug}/reviews`;
+  const comparablyHtml = await fetchHtml(comparablyReviewsUrl);
+  if (comparablyHtml && comparablyHtml.length > 2000) {
+    const $c = cheerio.load(comparablyHtml);
+    const bodyText = $c('body').text().replace(/\s+/g, ' ');
+    if (!data.overallRating) {
+      const scoreM = bodyText.match(/(\d+)%\s*(?:of employees|say|positive|overall|culture)/i);
+      if (scoreM) data.overallRating = Math.round((parseInt(scoreM[1]) / 100) * 5 * 10) / 10;
+    }
+    if (!data.overallRating) {
+      const rM = bodyText.match(/(\d\.\d)\s*(?:out of 5|\/5|stars?)/i);
+      if (rM) data.overallRating = parseFloat(rM[1]);
+    }
     if (!data.ceoApproval) {
-      const approvalM = plain.match(/(\d+)%\s*(?:approve|approval|approved)/i);
-      if (approvalM) data.ceoApproval = parseInt(approvalM[1]);
+      const ceoM = bodyText.match(/(\d+)%\s*(?:approve|approval|approve of CEO)/i);
+      if (ceoM) data.ceoApproval = parseInt(ceoM[1]);
     }
-    sources.push({ url: `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(ceoQuery)}`, type: 'glassdoor', title: `${companyName} CEO & Leadership`, timestamp: new Date().toISOString() });
+    if (!data.recommendToFriend) {
+      const recM = bodyText.match(/(\d+)%\s*(?:would recommend|recommend this company)/i);
+      if (recM) data.recommendToFriend = parseInt(recM[1]);
+    }
+    $c('[class*="pros"],[class*="positive"],[class*="strength"]').each((_, el) => {
+      const t = $c(el).text().trim();
+      if (t.length > 15 && t.length < 300 && data.pros.length < 5) data.pros.push(t.slice(0, 200));
+    });
+    $c('[class*="cons"],[class*="negative"],[class*="weakness"]').each((_, el) => {
+      const t = $c(el).text().trim();
+      if (t.length > 15 && t.length < 300 && data.cons.length < 5) data.cons.push(t.slice(0, 200));
+    });
+    sources.push({ url: comparablyReviewsUrl, type: 'glassdoor', title: `${companyName} Reviews - Comparably`, timestamp: new Date().toISOString() });
   }
 
-  // Interview experience via DDG
-  const intQuery = `${companyName} interview experience difficulty process questions`;
-  const intHtml = await fetchHtml(
-    `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(intQuery)}`,
-    { Referer: 'https://lite.duckduckgo.com/' }
-  );
-  if (intHtml && intHtml.length > 1000) {
-    const plain = intHtml.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
-    const diffM = plain.match(/interview[^0-9]*?(\d\.\d)\s*(?:\/5|out of|stars)/i);
-    if (diffM) data.interviewDifficulty = parseFloat(diffM[1]);
-    const posM = plain.match(/(\d+)%\s*(?:positive|good|had a positive)/i);
-    if (posM) {
-      const pos = parseInt(posM[1]);
-      data.interviewExperience = { positive: pos, neutral: Math.max(0, 20 - Math.abs(pos - 60)), negative: 100 - pos };
+  // Comparably CEO page
+  if (!data.ceoName || !data.ceoApproval) {
+    const comparablyCeoUrl = `https://www.comparably.com/companies/${comparablySlug}/ceo`;
+    const ceoPageHtml = await fetchHtml(comparablyCeoUrl);
+    if (ceoPageHtml && ceoPageHtml.length > 1000) {
+      const $cc = cheerio.load(ceoPageHtml);
+      const bodyText = $cc('body').text().replace(/\s+/g, ' ');
+      const ceoNameM = bodyText.match(/([A-Z][a-z]+ [A-Z][a-z]+)\s*(?:is|,)\s*(?:the\s+)?(?:CEO|Chief Executive)/i) ||
+                       bodyText.match(/CEO\s+(?:of\s+\w+\s+)?(?:is\s+)?([A-Z][a-z]+ [A-Z][a-z]+)/i);
+      if (ceoNameM && !data.ceoName) data.ceoName = ceoNameM[1].trim();
+      const approvalM = bodyText.match(/(\d+)%\s*(?:of employees|approve|positive)/i);
+      if (approvalM && !data.ceoApproval) data.ceoApproval = parseInt(approvalM[1]);
+      sources.push({ url: comparablyCeoUrl, type: 'glassdoor', title: `${companyName} CEO - Comparably`, timestamp: new Date().toISOString() });
     }
-    // Pull 2-3 interview quote snippets
-    const $int = cheerio.load(intHtml);
-    $int('td, .result-snippet').each((_, el) => {
-      const t = $int(el).text().trim();
-      if (t.length > 40 && t.length < 300 &&
-          /interview|hiring|process|question|round|offer/i.test(t) &&
-          (data.interviewQuotes?.length ?? 0) < 3) {
+  }
+
+  // Google News RSS — reputation, CEO, interview signals
+  const repQuery = `"${companyName}" glassdoor OR comparably reviews rating culture employees`;
+  const repRss = await fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(repQuery)}&hl=en-US&gl=US&ceid=US:en`);
+  if (repRss && repRss.length > 500) {
+    const $r = cheerio.load(repRss, { xmlMode: true });
+    const allText: string[] = [];
+    $r('item').each((_, el) => {
+      allText.push(`${$r(el).find('title').text()} ${$r(el).find('description').text().replace(/<[^>]*>/g, '')}`);
+    });
+    const plain = allText.join(' ');
+    if (!data.overallRating) {
+      const rM = plain.match(/(\d\.\d)\s*(?:out of 5|stars?|\/5)/i);
+      if (rM) data.overallRating = parseFloat(rM[1]);
+    }
+    if (!data.ceoApproval) {
+      const ceoM = plain.match(/(\d+)%\s*(?:approve|approval)/i);
+      if (ceoM) data.ceoApproval = parseInt(ceoM[1]);
+    }
+    if (!data.ceoName) {
+      const ceoNameM = plain.match(/(?:CEO|Chief Executive)[,\s]+([A-Z][a-z]+ [A-Z][a-z]+)/i) ||
+                       plain.match(/([A-Z][a-z]+ [A-Z][a-z]+)[,\s]+CEO/i);
+      if (ceoNameM) data.ceoName = ceoNameM[1].trim();
+    }
+    sources.push({ url: `https://news.google.com/rss/search?q=${encodeURIComponent(repQuery)}`, type: 'glassdoor', title: `${companyName} Reputation News`, timestamp: new Date().toISOString() });
+  }
+
+  const intRssQuery = `"${companyName}" interview process experience questions difficulty`;
+  const intRss = await fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(intRssQuery)}&hl=en-US&gl=US&ceid=US:en`);
+  if (intRss && intRss.length > 500) {
+    const $int = cheerio.load(intRss, { xmlMode: true });
+    $int('item').each((_, el) => {
+      const desc = $int(el).find('description').text().replace(/<[^>]*>/g, '').trim();
+      const combined = `${$int(el).find('title').text()} ${desc}`;
+      if (!data.interviewExperience) {
+        const posM = combined.match(/(\d+)%\s*(?:positive|had a positive)/i);
+        if (posM) { const pos = parseInt(posM[1]); data.interviewExperience = { positive: pos, neutral: 20, negative: 100 - pos - 20 }; }
+      }
+      if (desc.length > 40 && /interview|hiring|onsite|technical|process/i.test(combined) && (data.interviewQuotes?.length ?? 0) < 3) {
         if (!data.interviewQuotes) data.interviewQuotes = [];
-        data.interviewQuotes.push(t.slice(0, 250));
+        data.interviewQuotes.push(desc.slice(0, 250));
       }
     });
-    sources.push({ url: `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(intQuery)}`, type: 'glassdoor', title: `${companyName} Interview Experience`, timestamp: new Date().toISOString() });
+    sources.push({ url: `https://news.google.com/rss/search?q=${encodeURIComponent(intRssQuery)}`, type: 'glassdoor', title: `${companyName} Interview Data`, timestamp: new Date().toISOString() });
   }
 
   // Strategy 2: Indeed company reviews — structured page with JSON-LD
