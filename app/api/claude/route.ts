@@ -129,8 +129,8 @@ COMPANY REVIEWS & CULTURE:
 Glassdoor: ${scrapedData.glassdoor?.overallRating ?? '?'}/5 | ${scrapedData.glassdoor?.reviewCount ?? '?'} reviews | CEO: ${scrapedData.glassdoor?.ceoName ?? 'unknown'} | CEO approval: ${scrapedData.glassdoor?.ceoApproval ?? '?'}% | Recommend: ${scrapedData.glassdoor?.recommendToFriend ?? '?'}%
 Blind (anonymous): ${scrapedData.glassdoor?.blindRating ? `${scrapedData.glassdoor.blindRating}/5` : 'no data'} | Posts: ${scrapedData.glassdoor?.blindPosts?.slice(0, 3).join(' | ') || 'none'}
 Rating trend: ${scrapedData.glassdoor?.ratingTrend || 'unknown — infer from review language and news recency'}
-Employee pros (verbatim themes): ${scrapedData.glassdoor?.pros?.slice(0, 6).join(' | ') || 'none scraped'}
-Employee cons (verbatim themes): ${scrapedData.glassdoor?.cons?.slice(0, 6).join(' | ') || 'none scraped'}
+Employee pros (verbatim themes): ${scrapedData.glassdoor?.pros?.slice(0, 10).join(' | ') || 'none scraped'}
+Employee cons (verbatim themes): ${scrapedData.glassdoor?.cons?.slice(0, 10).join(' | ') || 'none scraped'}
 Interview difficulty: ${scrapedData.glassdoor?.interviewDifficulty ?? '?'}/5 | Interview experience: ${scrapedData.glassdoor?.interviewExperience ? `${scrapedData.glassdoor.interviewExperience.positive}% positive` : '?'}
 Interview quotes: ${scrapedData.glassdoor?.interviewQuotes?.slice(0, 2).join(' | ') || 'none'}
 
@@ -143,21 +143,21 @@ ${(scrapedData.news ?? [])
     const bMatch = b.title.toLowerCase().includes(request.companyName.toLowerCase()) ? 1 : 0;
     return bMatch - aMatch;
   })
-  .slice(0, 20)
+  .slice(0, 50)
   .map(n => `[${n.publishedAt?.slice(0, 10)}] ${n.title} — ${n.summary?.slice(0, 80)} [URL:${n.url}]`)
   .join('\n') || 'none found'}
 
 REDDIT EMPLOYEE DISCUSSIONS (${scrapedData.reddit?.length ?? 0} threads — unfiltered employee voice):
-${scrapedData.reddit?.slice(0, 10).map(t => {
-  const body = (t.body || '').slice(0, 150);
-  const comments = t.topComments?.slice(0, 2).map(c => c.slice(0, 100)).join(' | ') || '';
+${scrapedData.reddit?.slice(0, 20).map(t => {
+  const body = (t.body || '').slice(0, 200);
+  const comments = t.topComments?.slice(0, 3).map(c => c.slice(0, 150)).join(' | ') || '';
   return `[r/${t.subreddit}] "${t.title}"${body ? ` — POST: ${body}` : ''}${comments ? ` | COMMENTS: ${comments}` : ''}`;
 }).join('\n') || 'none found'}
 
 SEC / FINANCIAL INTELLIGENCE:
 Layoff signals: ${scrapedData.sec?.layoffSignals?.join('; ') || 'none'}
 Executive departures: ${scrapedData.sec?.executiveDepartures?.join('; ') || 'none'}
-Recent 8-Ks: ${scrapedData.sec?.filings?.slice(0, 4).map(f => `${f.date}: ${f.description}`).join('; ') || 'none'}
+Recent filings: ${scrapedData.sec?.filings?.slice(0, 8).map(f => `${f.date}: ${f.description}`).join('; ') || 'none'}
 Financial signals: ${scrapedData.sec?.financialSignals?.join(' | ') || 'none'}
 Funding history: ${scrapedData.sec?.fundingSignals?.join(' | ') || 'none'}
 
@@ -165,8 +165,8 @@ SALARY DATA:
 BLS median: $${scrapedData.bls?.medianSalary?.toLocaleString() ?? 'not found'} | P10: $${scrapedData.bls?.p10?.toLocaleString() ?? '?'} | P25: $${scrapedData.bls?.p25?.toLocaleString() ?? '?'} | P75: $${scrapedData.bls?.p75?.toLocaleString() ?? '?'} | P90: $${scrapedData.bls?.p90?.toLocaleString() ?? '?'}
 H-1B DOL verified salaries (real wages paid by company): ${scrapedData.bls?.hibData ? `n=${scrapedData.bls.hibData.sampleSize}, median=$${scrapedData.bls.hibData.median.toLocaleString()}, range=$${scrapedData.bls.hibData.low.toLocaleString()}–$${scrapedData.bls.hibData.high.toLocaleString()}` : 'not found'}
 Location salary: ${scrapedData.bls?.locationData || 'not found'}
-Levels.fyi: ${scrapedData.levels?.targetRoleSalaries?.slice(0, 3).map(s => `${s.company} $${s.base?.toLocaleString()} base`).join(', ') || 'none found'}
-Comparable cos: ${scrapedData.levels?.comparableSalaries?.slice(0, 3).map(s => `${s.company} $${s.base?.toLocaleString()}`).join(', ') || 'none'}
+Levels.fyi: ${scrapedData.levels?.targetRoleSalaries?.slice(0, 5).map(s => `${s.company} $${s.base?.toLocaleString()} base`).join(', ') || 'none found'}
+Comparable cos: ${scrapedData.levels?.comparableSalaries?.slice(0, 6).map(s => `${s.company} $${s.base?.toLocaleString()}`).join(', ') || 'none'}
 
 OFFER: ${request.offerText || 'not provided'}
 
