@@ -95,14 +95,24 @@ export async function POST(req: NextRequest) {
 
   const systemPrompt = `You are a brutally honest career intelligence analyst. Give candidates the information companies already have but candidates don't. Never soften bad news. Sound like advice from a sharp friend in recruiting — honest, specific, actionable.
 
-FORMATTING RULES — strictly follow:
-- Text fields (companyIntelligence, roleIntelligence, salaryAnalysis, offerAnalysis): max 3-4 SHORT sentences total. No essays. Use **bold** for key facts/numbers. Bullet points (•) for 3+ items only.
-- Timeline sourceUrl: copy the exact URL from [URL:...] tags in the news data for each timeline event. Use empty string "" if no matching URL.
-- roleScorecard "Posting Age Signal": if postedDate is provided, calculate how long ago it was posted and flag if >45 days (stale req). If no postedDate, analyze based on company hiring velocity signals from news/Reddit — is the company actively hiring or in a freeze? NEVER just write "no posting date provided" as the only insight.
+COVERAGE REQUIREMENTS — every section must address these specific points:
+
+COMPANY INTELLIGENCE (companyIntelligence field): overall company health, financial stability signals, layoff risk from news/SEC filings, leadership stability and recent executive departures, Glassdoor rating trend (improving or declining based on review patterns), what employees actually say in reviews (real themes from pros/cons — not generic summaries), Reddit sentiment from real employees, news signals (lawsuits/acquisitions/pivots/PR problems), CEO approval % and recommend-to-friend % if available. Use **bold** for key numbers.
+
+ROLE INTELLIGENCE (roleIntelligence field): title accuracy vs responsibilities, whether experience requirements are inflated, responsibility-to-seniority mismatch (are they asking for director-level work at manager pay?), how this role is typically structured at comparable companies, typical career path from this role, and any signals of high turnover in this role (repeated postings, Reddit complaints about this specific team).
+
+SALARY INTELLIGENCE (salaryAnalysis field): is the posted range a real offer or a lowball anchor, what this role pays at this specific company per scraped data, what it pays at comparable companies in the same market, geographic cost-of-living adjustment, exact percentile placement, total compensation reality including typical bonus payout rates and equity value.
+
+OFFER ANALYSIS (offerAnalysis field — only if offer text provided): analyze ALL of the following in bullet format: (1) base vs market, (2) bonus — is it discretionary or guaranteed, typical payout rate, (3) equity — vesting schedule, cliff length, what it's actually worth at current valuation, (4) benefits gap vs market standard, (5) PTO — actual vs policy reality, (6) clawback clauses if present, (7) non-compete scope and enforceability, (8) unusually broad at-will language, (9) probationary period terms. Flag any of these as redFlags if concerning.
+
+FORMATTING RULES:
+- companyIntelligence, roleIntelligence, salaryAnalysis: use **bold** for key facts/numbers. Bullet points (•) for multiple items.
+- offerAnalysis: use bullet points covering every term above. Be explicit — name the clause, say what it means practically.
+- Timeline sourceUrl: copy exact URL from [URL:...] tags in the news data. Empty string "" if no match.
+- roleScorecard "Posting Age Signal": if postedDate provided, calculate days since posted and flag if >45 days. If no date, analyze company hiring velocity from signals. NEVER just say "no date provided."
 - Never say "cannot determine" or "data unavailable". Always reason from available signals.
-- Numeric fields (radar scores, salaries): ground in actual scraped data. Glassdoor 3.8 → use 3.8. BLS $112k → use it. Estimate conservatively if missing, note it in text only.
 - Radar scores must reflect data: low Glassdoor = low culture, layoff signals = low financial stability. Do not default to 5.
-- Salary figures must derive from BLS/Levels data provided.`;
+- Salary figures must derive from BLS/Levels/scraped data provided.`;
 
   const userPrompt = `Analyze this job opportunity. Be specific. Use real numbers. Never write "data unavailable" — always reason from available signals.
 
@@ -115,16 +125,21 @@ ${jobText.slice(0, 2500)}
 
 COMPANY REVIEWS & CULTURE:
 Rating: ${scrapedData.glassdoor?.overallRating ?? 'not scraped'}/5 | Reviews: ${scrapedData.glassdoor?.reviewCount ?? '?'} | CEO: ${scrapedData.glassdoor?.ceoName ?? 'unknown'} | CEO approval: ${scrapedData.glassdoor?.ceoApproval ?? '?'}% | Recommend: ${scrapedData.glassdoor?.recommendToFriend ?? '?'}%
-Pros: ${scrapedData.glassdoor?.pros?.slice(0, 5).join(' | ') || 'none scraped'}
-Cons: ${scrapedData.glassdoor?.cons?.slice(0, 5).join(' | ') || 'none scraped'}
+Rating trend: ${scrapedData.glassdoor?.ratingTrend || 'unknown — infer from review language and news recency'}
+Employee pros (verbatim themes): ${scrapedData.glassdoor?.pros?.slice(0, 5).join(' | ') || 'none scraped'}
+Employee cons (verbatim themes): ${scrapedData.glassdoor?.cons?.slice(0, 5).join(' | ') || 'none scraped'}
 Interview difficulty: ${scrapedData.glassdoor?.interviewDifficulty ?? '?'}/5 | Interview experience: ${scrapedData.glassdoor?.interviewExperience ? `${scrapedData.glassdoor.interviewExperience.positive}% positive` : '?'}
 Interview quotes: ${scrapedData.glassdoor?.interviewQuotes?.slice(0, 2).join(' | ') || 'none'}
 
 NEWS (${scrapedData.news?.length ?? 0} articles — most recent first):
 ${scrapedData.news?.slice(0, 12).map(n => `[${n.publishedAt?.slice(0, 10)}] ${n.title} — ${n.summary?.slice(0, 80)} [URL:${n.url}]`).join('\n') || 'none found'}
 
-REDDIT EMPLOYEE DISCUSSIONS (${scrapedData.reddit?.length ?? 0} threads found):
-${scrapedData.reddit?.slice(0, 8).map(t => `[r/${t.subreddit}] "${t.title}" — ${(t.body || t.topComments?.[0] || '').slice(0, 120)}`).join('\n') || 'none found'}
+REDDIT EMPLOYEE DISCUSSIONS (${scrapedData.reddit?.length ?? 0} threads — unfiltered employee voice):
+${scrapedData.reddit?.slice(0, 10).map(t => {
+  const body = (t.body || '').slice(0, 150);
+  const comments = t.topComments?.slice(0, 2).map(c => c.slice(0, 100)).join(' | ') || '';
+  return `[r/${t.subreddit}] "${t.title}"${body ? ` — POST: ${body}` : ''}${comments ? ` | COMMENTS: ${comments}` : ''}`;
+}).join('\n') || 'none found'}
 
 SEC / FINANCIAL INTELLIGENCE:
 Layoff signals: ${scrapedData.sec?.layoffSignals?.join('; ') || 'none'}
@@ -143,7 +158,7 @@ OFFER: ${request.offerText || 'not provided'}
 
 Return ONLY valid JSON, no markdown fences, no text outside the JSON object:
 
-{"verdict":"STRONG OPPORTUNITY","verdictExplanation":"one brutal sentence","bottomLine":"2 sentences max","radarScores":{"financialStability":7,"culture":6,"leadership":5,"growthTrajectory":6,"retention":5,"transparency":4},"salaryIntelligence":{"marketMin":80000,"p25":95000,"median":115000,"p75":140000,"marketMax":175000,"offerValue":120000,"percentile":55,"verdict":"FAIR","analysis":"2 sentences max"},"timeline":[{"date":"2024-03","type":"layoff","title":"Short title","description":"one sentence","source":"source name","sourceUrl":"use URL from [URL:...] in news above, or empty string"}],"redFlags":[{"severity":"critical","title":"Flag title","explanation":"one sentence practical impact","icon":"🚨"}],"greenFlags":[{"title":"Flag title","explanation":"one sentence why good","icon":"✅"}],"roleScorecard":[{"dimension":"Title Accuracy","status":"green","explanation":"one line"},{"dimension":"Experience Requirements Realism","status":"yellow","explanation":"one line"},{"dimension":"Posting Age Signal","status":"green","explanation":"one line"},{"dimension":"Backfill vs New Role","status":"yellow","explanation":"one line"},{"dimension":"Remote Policy Reliability","status":"red","explanation":"one line"}],"sentimentWords":[{"text":"word","value":50,"sentiment":"positive"}],"negotiationPlaybook":${request.offerText ? '{"levers":[{"lever":"Base Salary","negotiable":true,"priority":1}],"openingLine":"exact words","pushbackResponse":"exact words","walkAwayRecommendation":"one sentence"}' : 'null'},"companyIntelligence":"3-4 punchy sentences total covering health, culture, risk","roleIntelligence":"2-3 sentences on role reality","salaryAnalysis":"2-3 sentences on pay","offerAnalysis":${request.offerText ? '"2-3 sentence offer breakdown"' : 'null'}}`;
+{"verdict":"STRONG OPPORTUNITY","verdictExplanation":"one brutal sentence","bottomLine":"2 sentences max","radarScores":{"financialStability":7,"culture":6,"leadership":5,"growthTrajectory":6,"retention":5,"transparency":4},"salaryIntelligence":{"marketMin":80000,"p25":95000,"median":115000,"p75":140000,"marketMax":175000,"offerValue":120000,"percentile":55,"verdict":"FAIR","analysis":"2 sentences max"},"timeline":[{"date":"2024-03","type":"layoff","title":"Short title","description":"one sentence","source":"source name","sourceUrl":"use URL from [URL:...] in news above, or empty string"}],"redFlags":[{"severity":"critical","title":"Flag title","explanation":"one sentence practical impact","icon":"🚨"}],"greenFlags":[{"title":"Flag title","explanation":"one sentence why good","icon":"✅"}],"roleScorecard":[{"dimension":"Title Accuracy","status":"green","explanation":"one line"},{"dimension":"Experience Requirements Realism","status":"yellow","explanation":"one line"},{"dimension":"Seniority-Responsibility Match","status":"yellow","explanation":"one line"},{"dimension":"Posting Age Signal","status":"green","explanation":"one line"},{"dimension":"Backfill vs New Role","status":"yellow","explanation":"one line"},{"dimension":"Remote Policy Reliability","status":"red","explanation":"one line"},{"dimension":"Turnover Risk Signal","status":"yellow","explanation":"one line"}],"sentimentWords":[{"text":"word","value":50,"sentiment":"positive"}],"negotiationPlaybook":${request.offerText ? '{"levers":[{"lever":"Base Salary","negotiable":true,"priority":1}],"openingLine":"exact words","pushbackResponse":"exact words","walkAwayRecommendation":"one sentence"}' : 'null'},"companyIntelligence":"cover all company health dimensions with **bold** numbers","roleIntelligence":"cover title accuracy, seniority match, career path, turnover signals","salaryAnalysis":"cover market rate, company-specific pay, percentile, total comp with bonus+equity","offerAnalysis":${request.offerText ? '"bullet-point analysis of every offer term: base, bonus, equity, benefits, PTO, clawback, non-compete, at-will, probationary"' : 'null'}}`;
 
   const encoder = new TextEncoder();
 
