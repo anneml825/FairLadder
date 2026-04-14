@@ -62,7 +62,18 @@ export default function Timeline({ events }: Props) {
                   <h4 className="text-sm font-medium text-white mt-1">{event.title}</h4>
                   <p className="text-xs text-[#8892a4] mt-0.5 leading-relaxed">{event.description}</p>
                   {event.source && (
-                    <span className="text-[10px] text-[#4a5568] mt-1 block">Source: {event.source.slice(0, 60)}</span>
+                    event.sourceUrl ? (
+                      <a
+                        href={event.sourceUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[10px] text-indigo-400/70 hover:text-indigo-300 mt-1 block underline underline-offset-2 transition-colors"
+                      >
+                        Source: {event.source.slice(0, 60)}
+                      </a>
+                    ) : (
+                      <span className="text-[10px] text-[#4a5568] mt-1 block">Source: {event.source.slice(0, 60)}</span>
+                    )
                   )}
                 </div>
               </div>

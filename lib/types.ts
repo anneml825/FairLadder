@@ -141,6 +141,7 @@ export interface TimelineEvent {
   title: string;
   description: string;
   source?: string;
+  sourceUrl?: string;
 }
 
 export interface SalaryIntelligence {

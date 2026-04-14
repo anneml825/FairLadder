@@ -2,6 +2,14 @@
 
 import { RoleScorecardRow } from '@/lib/types';
 
+function renderMd(text: string) {
+  if (!text) return null;
+  const parts = text.split(/\*\*(.+?)\*\*/g);
+  return parts.map((part, i) =>
+    i % 2 === 1 ? <strong key={i} className="text-white font-semibold">{part}</strong> : part
+  );
+}
+
 interface Props {
   rows: RoleScorecardRow[];
   roleIntelligence: string;
@@ -44,7 +52,7 @@ export default function RoleScorecard({ rows, roleIntelligence }: Props) {
       {roleIntelligence && (
         <div className="border-t border-[#1e2736] pt-4">
           <div className="text-xs text-[#8892a4] mb-2 uppercase tracking-wide font-medium">Analysis</div>
-          <p className="text-sm text-[#c8d0e0] leading-relaxed whitespace-pre-wrap">{roleIntelligence}</p>
+          <p className="text-sm text-[#c8d0e0] leading-relaxed whitespace-pre-wrap">{renderMd(roleIntelligence)}</p>
         </div>
       )}
     </div>

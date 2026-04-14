@@ -13,6 +13,14 @@ import SentimentViz from '@/components/SentimentViz';
 import NegotiationPlaybook from '@/components/NegotiationPlaybook';
 import SourcesPanel from '@/components/SourcesPanel';
 
+function renderMd(text: string) {
+  if (!text) return null;
+  const parts = text.split(/\*\*(.+?)\*\*/g);
+  return parts.map((part, i) =>
+    i % 2 === 1 ? <strong key={i} className="text-white font-semibold">{part}</strong> : part
+  );
+}
+
 const VERDICT_CONFIG = {
   'STRONG OPPORTUNITY': {
     bg: 'from-emerald-500/20 via-emerald-500/5 to-transparent',
@@ -209,7 +217,7 @@ export default function ResultsPage() {
             <div className="glass rounded-2xl p-6 border border-[#1e2736]">
               <h3 className="text-sm font-semibold text-white uppercase tracking-wide mb-4">Company Intelligence</h3>
               <div className="prose prose-sm max-w-none">
-                <p className="text-sm text-[#c8d0e0] leading-relaxed whitespace-pre-wrap">{result.companyIntelligence}</p>
+                <p className="text-sm text-[#c8d0e0] leading-relaxed whitespace-pre-wrap">{renderMd(result.companyIntelligence)}</p>
               </div>
 
               {/* Glassdoor snapshot */}
@@ -322,7 +330,7 @@ export default function ResultsPage() {
 
             <div className="glass rounded-2xl p-6 border border-[#1e2736]">
               <h3 className="text-sm font-semibold text-white uppercase tracking-wide mb-4">Salary Analysis</h3>
-              <p className="text-sm text-[#c8d0e0] leading-relaxed whitespace-pre-wrap">{result.salaryAnalysis}</p>
+              <p className="text-sm text-[#c8d0e0] leading-relaxed whitespace-pre-wrap">{renderMd(result.salaryAnalysis)}</p>
             </div>
 
             {/* BLS data */}
@@ -387,7 +395,7 @@ export default function ResultsPage() {
             {result.offerAnalysis && (
               <div className="mt-6 glass rounded-2xl p-6 border border-[#1e2736]">
                 <h3 className="text-sm font-semibold text-white uppercase tracking-wide mb-4">Offer Analysis</h3>
-                <p className="text-sm text-[#c8d0e0] leading-relaxed whitespace-pre-wrap">{result.offerAnalysis}</p>
+                <p className="text-sm text-[#c8d0e0] leading-relaxed whitespace-pre-wrap">{renderMd(result.offerAnalysis)}</p>
               </div>
             )}
           </div>
