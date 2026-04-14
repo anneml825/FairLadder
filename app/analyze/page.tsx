@@ -171,7 +171,7 @@ export default function AnalyzePage() {
           isRepost: false,
         };
         addSources(jobSearchRes?.sources?.length || 1);
-        setStep('job', { status: 'done', count: 1 });
+        if (!signal.aborted) setStep('job', { status: 'done', count: 1 });
       }
 
       const role = jobPosting?.title || '';
