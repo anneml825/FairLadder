@@ -214,73 +214,84 @@ export async function scrapeReddit(
     sources.push({ url: p.url, type: 'reddit', title: p.title.slice(0, 120), timestamp: new Date().toISOString() });
   };
 
-  // Primary: Serper.dev (2500 free) or SerpAPI fallback → site:reddit.com Google search → fetch each thread's .json
-  // This gives us real Google-ranked Reddit results + full thread content
+  // Primary: Serper.dev — run all queries IN PARALLEL (was sequential, caused timeouts)
+  // Use site: AND keyword-only variants so we find threads even when Google site: index is sparse
   const serpQueries = [
     `site:reddit.com "${companyName}" employees culture work experience`,
     `site:reddit.com "${companyName}" salary compensation pay`,
     `site:reddit.com "${companyName}" interview hiring layoffs`,
-    role && role.length < 60 ? `site:reddit.com "${companyName}" "${role}"` : `site:reddit.com "${companyName}" career`,
+    `"${companyName}" reddit employees culture review`,          // no site: — catches more results
+    role && role.length < 60
+      ? `site:reddit.com "${companyName}" "${role}"`
+      : `"${companyName}" reddit salary career`,
   ];
-  for (const q of serpQueries) {
-    const results = await searchWeb(q, 8);
+
+  // All Serper queries fire at once
+  const serpResultSets = await Promise.all(serpQueries.map(q => searchWeb(q, 6)));
+
+  // Dedupe and collect unique Reddit thread URLs
+  const candidateUrls: Array<{ link: string; title: string; snippet: string }> = [];
+  for (const results of serpResultSets) {
     for (const r of results) {
-      if (!r.link.includes('reddit.com/r/') || seen.has(r.link)) continue;
-      seen.add(r.link);
-      const subredditM = r.link.match(/reddit\.com\/r\/([^/]+)/);
-      // Fetch full thread via Reddit's .json endpoint
-      let body = r.snippet;
-      let topComments: string[] = [];
-      try {
-        const jsonUrl = r.link.replace(/\/$/, '') + '.json?limit=5';
-        const jsonRes = await axios.get(jsonUrl, {
-          headers: { 'User-Agent': REDDIT_UA, Accept: 'application/json' },
-          timeout: 8000,
-        });
-        type RedditJsonPost = { data: { selftext?: string } };
-        type RedditJsonComment = { data: { body?: string; score?: number } };
-        const postData: RedditJsonPost = jsonRes.data?.[0]?.data?.children?.[0] ?? {};
-        body = postData.data?.selftext?.slice(0, 600) || r.snippet;
-        const comments: RedditJsonComment[] = jsonRes.data?.[1]?.data?.children ?? [];
-        topComments = comments
-          .filter((c) => c.data?.body && c.data.body !== '[deleted]')
-          .slice(0, 3)
-          .map((c) => (c.data.body ?? '').slice(0, 300));
-      } catch { /* fall back to snippet */ }
-      threads.push({ title: r.title, url: r.link, subreddit: subredditM?.[1] || 'reddit', score: 0, commentCount: 0, topComments, body });
-      sources.push({ url: r.link, type: 'reddit', title: r.title.slice(0, 120), timestamp: new Date().toISOString() });
+      if (r.link.includes('reddit.com/r/') && !seen.has(r.link)) {
+        seen.add(r.link);
+        candidateUrls.push(r);
+      }
     }
   }
 
-  // Fallback: Reddit's own search API (if SerpAPI key not set or returned few results)
-  const queries = [
-    `"${companyName}" employees culture work`,
-    `"${companyName}" salary compensation pay`,
-    `"${companyName}" layoffs interview hiring`,
-    role ? `"${companyName}" "${role}"` : `"${companyName}" career`,
-  ];
-  // Fallback layer 1: Reddit's own JSON search API
+  // Fetch all thread .json endpoints IN PARALLEL with a short timeout (was 8s sequential per thread)
+  type RedditJsonPost = { data: { selftext?: string } };
+  type RedditJsonComment = { data: { body?: string; score?: number } };
+
+  await Promise.all(candidateUrls.slice(0, 12).map(async (r) => {
+    const subredditM = r.link.match(/reddit\.com\/r\/([^/]+)/);
+    let body = r.snippet;
+    let topComments: string[] = [];
+    try {
+      const jsonUrl = r.link.replace(/\/$/, '') + '.json?limit=4';
+      const jsonRes = await axios.get(jsonUrl, {
+        headers: { 'User-Agent': REDDIT_UA, Accept: 'application/json' },
+        timeout: 4000,   // short — we're running in parallel so a slow one doesn't block others
+      });
+      const postData: RedditJsonPost = jsonRes.data?.[0]?.data?.children?.[0] ?? {};
+      body = postData.data?.selftext?.slice(0, 600) || r.snippet;
+      const comments: RedditJsonComment[] = jsonRes.data?.[1]?.data?.children ?? [];
+      topComments = comments
+        .filter(c => c.data?.body && c.data.body !== '[deleted]')
+        .slice(0, 3)
+        .map(c => (c.data.body ?? '').slice(0, 200));
+    } catch { /* use snippet as body */ }
+    threads.push({ title: r.title, url: r.link, subreddit: subredditM?.[1] || 'reddit', score: 0, commentCount: 0, topComments, body });
+    sources.push({ url: r.link, type: 'reddit', title: r.title.slice(0, 120), timestamp: new Date().toISOString() });
+  }));
+
+  // Fallback: Reddit's native search API + key subreddits — runs in parallel if Serper found < 5
   if (threads.length < 5) {
-    for (const q of queries) {
-      const posts = await fetchRedditSearch(q);
-      posts.forEach(addPost);
-    }
-    // Subreddit-targeted searches
-    const subreddits = ['cscareerquestions', 'jobs', 'careerguidance', 'recruiting',
-      'ExperiencedDevs', 'softwareengineering', 'datascience', 'personalfinance', 'AskHR', 'remotework'];
-    for (const sub of subreddits) {
-      const posts = await fetchRedditSearch(`"${companyName}"`, sub);
-      posts.forEach(addPost);
-    }
+    const nativeQueries = [
+      `"${companyName}" employees culture work`,
+      `"${companyName}" salary compensation pay`,
+      `"${companyName}" layoffs interview hiring`,
+      role ? `"${companyName}" "${role}"` : `"${companyName}" career`,
+    ];
+    const subreddits = ['cscareerquestions', 'jobs', 'careerguidance', 'finance',
+      'financialcareers', 'investing', 'ExperiencedDevs', 'personalfinance', 'AskHR'];
+    const allNative = await Promise.all([
+      ...nativeQueries.map(q => fetchRedditSearch(q)),
+      ...subreddits.map(sub => fetchRedditSearch(`"${companyName}"`, sub)),
+    ]);
+    allNative.flat().forEach(addPost);
   }
 
-  // Fallback layer 2: Google News RSS (always runs — catches news-indexed Reddit content)
-  for (const q of [`"${companyName}" site:reddit.com`, `"${companyName}" reddit employees`]) {
-    const rssXml = await fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=en-US&gl=US&ceid=US:en`);
-    if (rssXml) extractRedditThreads(rssXml, seen, threads, sources);
-  }
+  // Google News RSS — catches Reddit threads indexed via news (runs in parallel)
+  const rssUrls = [
+    `https://news.google.com/rss/search?q=${encodeURIComponent(`"${companyName}" site:reddit.com`)}&hl=en-US&gl=US&ceid=US:en`,
+    `https://news.google.com/rss/search?q=${encodeURIComponent(`"${companyName}" reddit employees`)}&hl=en-US&gl=US&ceid=US:en`,
+  ];
+  const rssResults = await Promise.all(rssUrls.map(u => fetchHtml(u)));
+  rssResults.forEach(xml => { if (xml) extractRedditThreads(xml, seen, threads, sources); });
 
-  return { threads: threads.slice(0, 60), sources };
+  return { threads: threads.slice(0, 30), sources };
 }
 
 // ── GOOGLE CUSTOM SEARCH ─────────────────────────────────────────────────────
