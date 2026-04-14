@@ -716,80 +716,96 @@ export async function scrapeBLS(
     locationData: '',
   };
 
-  // Strategy 1: Google News RSS — BLS press releases contain median wage sentences
-  // e.g. "The median annual wage for software developers was $127,260 in May 2023."
-  const newsQuery = `"${role}" median annual wage salary 2023 2024`;
-  const newsRss = await fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(newsQuery)}&hl=en-US&gl=US&ceid=US:en`);
-  if (newsRss && newsRss.length > 500) {
-    const $b = cheerio.load(newsRss, { xmlMode: true });
-    const allText: string[] = [];
-    $b('item').each((_, el) => {
-      allText.push(`${$b(el).find('title').text()} ${$b(el).find('description').text().replace(/<[^>]*>/g, '')}`);
-    });
-    const plain = allText.join(' ');
-    const medianM =
-      plain.match(/median annual (?:wage|salary)[^$]*\$\s*([\d,]+)/i) ||
-      plain.match(/median pay[^$]*\$\s*([\d,]+)/i) ||
-      plain.match(/\$\s*([\d]{2,3},\d{3})\s*per year/i);
-    if (medianM) {
-      const val = parseInt(medianM[1].replace(/,/g, ''));
-      if (val >= 25000 && val <= 600000) data.medianSalary = val;
-    }
-    sources.push({ url: `https://news.google.com/rss/search?q=${encodeURIComponent(newsQuery)}`, type: 'bls', title: `${role} — Wage Data`, timestamp: new Date().toISOString() });
-  }
+  // ── Strategy 1 (PRIMARY): Serper web search across salary sites ──────────────
+  // Salary aggregator sites (salary.com, payscale, glassdoor/Salaries, bls.gov) reliably
+  // show dollar figures in Google search snippets — much more reliable than news summaries.
+  const salarySearches = [
+    `"${role}" average salary 2024 2025 site:salary.com OR site:payscale.com OR site:glassdoor.com`,
+    `"${role}" median annual wage site:bls.gov`,
+    `"${role}" average salary ${location || 'United States'} 2024`,
+    `"${role}" salary comparably.com OR ziprecruiter.com OR builtin.com`,
+  ];
 
-  // Location-specific salary news
-  if (location && location !== 'Remote') {
-    const locQuery = `"${role}" salary "${location}" average annual`;
-    const locRss = await fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(locQuery)}&hl=en-US&gl=US&ceid=US:en`);
-    if (locRss && locRss.length > 500) {
-      const $l = cheerio.load(locRss, { xmlMode: true });
-      const allText: string[] = [];
-      $l('item').each((_, el) => {
-        allText.push(`${$l(el).find('title').text()} ${$l(el).find('description').text().replace(/<[^>]*>/g, '')}`);
-      });
-      const locSalM = allText.join(' ').match(/\$\s*([\d]{2,3},\d{3})\s*(?:per year|annually|average|median)/i);
-      if (locSalM) {
-        const val = parseInt(locSalM[1].replace(/,/g, ''));
-        if (val >= 25000 && val <= 600000) data.locationData = `${location} average: $${val.toLocaleString()}`;
+  const allSalarySnippets: string[] = [];
+  for (const q of salarySearches) {
+    const results = await searchWeb(q, 8);
+    if (results.length > 0) {
+      allSalarySnippets.push(...results.map(r => `${r.title} ${r.snippet}`));
+      for (const r of results.slice(0, 2)) {
+        sources.push({ url: r.link, type: 'bls', title: r.title.slice(0, 80), timestamp: new Date().toISOString() });
       }
-      sources.push({ url: `https://news.google.com/rss/search?q=${encodeURIComponent(locQuery)}`, type: 'bls', title: `${role} Salary in ${location}`, timestamp: new Date().toISOString() });
+    }
+    if (data.medianSalary) break; // stop once we have a figure
+    const nums = extractSalariesFromText(allSalarySnippets.join(' '));
+    if (nums.length > 0) {
+      const sorted = nums.sort((a, b) => a - b);
+      data.medianSalary = sorted[Math.floor(sorted.length / 2)]; // use median of found figures
     }
   }
 
-  // Strategy 2: BLS Occupational Outlook Handbook search (cleaner pages than OES table)
+  // Location premium — separate Serper search for location-specific figure
+  if (location && location !== 'Remote' && !data.locationData) {
+    const locResults = await searchWeb(`"${role}" salary "${location}" average 2024 2025`, 5);
+    const locText = locResults.map(r => `${r.title} ${r.snippet}`).join(' ');
+    const locNums = extractSalariesFromText(locText);
+    if (locNums.length > 0) {
+      const locMedian = locNums.sort((a, b) => a - b)[Math.floor(locNums.length / 2)];
+      data.locationData = `${location} average: $${locMedian.toLocaleString()}`;
+      for (const r of locResults.slice(0, 1)) {
+        sources.push({ url: r.link, type: 'bls', title: r.title.slice(0, 80), timestamp: new Date().toISOString() });
+      }
+    }
+  }
+
+  // ── Strategy 2: BLS Occupational Outlook Handbook (official government data) ──
+  // Tries fuzzy-matching the role against BLS occupational categories.
   if (!data.medianSalary) {
     const oohQuery = role.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim().replace(/\s+/g, '+');
     const oohUrl = `https://www.bls.gov/ooh/occupation-finder.htm?pay=all&education=all&training=all&newjobs=all&growth=all&submit=GO&searchbar=${oohQuery}`;
     const oohHtml = await fetchHtml(oohUrl);
     if (oohHtml) {
       const $o = cheerio.load(oohHtml);
-      // OOH pages contain "Median Pay" cells
       $o('table tbody tr').each((_, row) => {
         if (data.medianSalary) return;
         const cells = $o(row).find('td');
         const rowText = $o(row).text();
-        const roleMatch = rowText.toLowerCase().includes(role.toLowerCase().split(' ')[0]);
+        // Match on ANY word from the role title (catches "Writers" for "Senior Copywriter")
+        const roleWords = role.toLowerCase().split(/\s+/).filter(w => w.length > 4);
+        const roleMatch = roleWords.some(w => rowText.toLowerCase().includes(w));
         if (roleMatch) {
           const payCell = [...Array(cells.length).keys()]
             .map(i => $o(cells[i]).text().trim())
-            .find(t => t.startsWith('$'));
+            .find(t => /^\$[\d,]+/.test(t));
           if (payCell) {
             const val = parseInt(payCell.replace(/[^0-9]/g, ''));
             if (val >= 25000 && val <= 600000) {
               data.medianSalary = val;
               data.occupationTitle = $o(cells[0]).text().trim() || role;
+              sources.push({ url: oohUrl, type: 'bls', title: 'BLS Occupational Outlook Handbook', timestamp: new Date().toISOString() });
             }
           }
         }
       });
-      if (data.medianSalary) {
-        sources.push({ url: oohUrl, type: 'bls', title: 'BLS Occupational Outlook Handbook', timestamp: new Date().toISOString() });
+    }
+  }
+
+  // ── Strategy 3: ZipRecruiter + Indeed salary pages (static, no JS) ───────────
+  if (!data.medianSalary) {
+    const roleSlug = role.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+    const zipUrl = `https://www.ziprecruiter.com/Salaries/${encodeURIComponent(role.replace(/\s+/g, '-'))}-Salary`;
+    const zipHtml = await fetchHtml(zipUrl);
+    if (zipHtml && zipHtml.length > 2000) {
+      const $z = cheerio.load(zipHtml);
+      const bodyText = $z('body').text().replace(/\s+/g, ' ');
+      const nums = extractSalariesFromText(bodyText);
+      if (nums.length > 0) {
+        data.medianSalary = nums.sort((a, b) => a - b)[Math.floor(nums.length / 2)];
+        sources.push({ url: zipUrl, type: 'bls', title: `${role} Salary — ZipRecruiter`, timestamp: new Date().toISOString() });
       }
     }
   }
 
-  // Derive percentiles from median using standard BLS distribution ratios
+  // Derive percentiles from median using standard wage distribution ratios
   if (data.medianSalary && !data.p25) {
     data.p10 = Math.round(data.medianSalary * 0.58);
     data.p25 = Math.round(data.medianSalary * 0.76);
@@ -799,6 +815,11 @@ export async function scrapeBLS(
 
   return { data, sources };
 }
+
+function extractSalariesFromText(text: string): number[] {
+  return extractSalaries(text);
+}
+
 
 // ── SEC EDGAR ────────────────────────────────────────────────────────────────
 export async function scrapeSEC(
