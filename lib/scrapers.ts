@@ -386,30 +386,80 @@ export async function scrapeGlassdoor(
     interviewDifficulty: null, interviewExperience: null, reviewCount: null,
   };
 
-  // Strategy 2: Web search (SerpAPI / Google CSE) → extract review snippets and
-  // follow Glassdoor/Comparably URLs directly for structured data
-  const reviewSearchResults = await searchWeb(`"${companyName}" glassdoor OR comparably reviews rating culture employees`, 10);
-  for (const r of reviewSearchResults) {
-    const lower = r.link.toLowerCase();
-    // Extract any rating numbers from snippets (Google caches Glassdoor snippet text)
-    if (!data.overallRating) {
-      const rM = r.snippet.match(/(\d\.\d)\s*(?:out of 5|stars?|\/5)/i);
-      if (rM) data.overallRating = parseFloat(rM[1]);
+  // Strategy 1: Serper targeted at Glassdoor — Google's cached snippets contain
+  // rating numbers and partial review text that Glassdoor's own bot-detection hides.
+  // Two queries: one broad, one site: restricted for review content.
+  const glassdoorSearches = [
+    `"${companyName}" glassdoor reviews rating culture employees`,
+    `site:glassdoor.com "${companyName}" reviews`,
+  ];
+  let glassdoorDirectUrl: string | null = null;
+
+  for (const q of glassdoorSearches) {
+    const reviewSearchResults = await searchWeb(q, 10);
+    for (const r of reviewSearchResults) {
+      const lower = r.link.toLowerCase();
+      const combinedText = `${r.title} ${r.snippet}`;
+
+      // Extract rating from snippet (Google caches the rating in meta description)
+      if (!data.overallRating) {
+        const rM = combinedText.match(/(\d\.\d)\s*(?:out of 5|stars?|\/5)/i);
+        if (rM) data.overallRating = parseFloat(rM[1]);
+      }
+      if (!data.ceoApproval) {
+        const ceoM = combinedText.match(/(\d+)%\s*(?:approve|approval)/i);
+        if (ceoM) data.ceoApproval = parseInt(ceoM[1]);
+      }
+      if (!data.recommendToFriend) {
+        const recM = combinedText.match(/(\d+)%\s*(?:would recommend|recommend)/i);
+        if (recM) data.recommendToFriend = parseInt(recM[1]);
+      }
+      if (!data.reviewCount) {
+        const rcM = combinedText.match(/([\d,]+)\s*reviews?/i);
+        if (rcM) data.reviewCount = parseInt(rcM[1].replace(/,/g, ''));
+      }
+      if (!data.ceoName) {
+        const ceoNM = combinedText.match(/CEO[,\s]+([A-Z][a-z]+ [A-Z][a-z]+)/i) ||
+                      combinedText.match(/([A-Z][a-z]+ [A-Z][a-z]+)[,\s]+CEO/i);
+        if (ceoNM) data.ceoName = ceoNM[1].trim();
+      }
+      // Review snippet text — save as pros/cons by sentiment
+      if (r.snippet.length > 30) {
+        if (data.pros.length < 6 && /great|excellent|good|strong|best|love|amazing|flexible|solid|competitive|growth/i.test(r.snippet)) {
+          data.pros.push(r.snippet.slice(0, 200));
+        }
+        if (data.cons.length < 6 && /poor|bad|toxic|difficult|slow|burnout|underpaid|micromanage|politics|turnover|layoff/i.test(r.snippet)) {
+          data.cons.push(r.snippet.slice(0, 200));
+        }
+      }
+      // Track the first Glassdoor Reviews URL we find — try fetching it directly below
+      if (!glassdoorDirectUrl && lower.includes('glassdoor.com') && (lower.includes('/reviews/') || lower.includes('-reviews-'))) {
+        glassdoorDirectUrl = r.link;
+        sources.push({ url: r.link, type: 'glassdoor', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
+      } else if (lower.includes('comparably.com')) {
+        sources.push({ url: r.link, type: 'glassdoor', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
+      }
     }
-    if (!data.ceoApproval) {
-      const ceoM = r.snippet.match(/(\d+)%\s*(?:approve|approval)/i);
-      if (ceoM) data.ceoApproval = parseInt(ceoM[1]);
-    }
-    if (!data.reviewCount) {
-      const rcM = r.snippet.match(/([\d,]+)\s*reviews?/i);
-      if (rcM) data.reviewCount = parseInt(rcM[1].replace(/,/g, ''));
-    }
-    // Snippets often contain pro/con sentences
-    if (data.pros.length < 5 && /great|excellent|good|strong|best|love|amazing/i.test(r.snippet)) data.pros.push(r.snippet.slice(0, 200));
-    if (data.cons.length < 5 && /poor|bad|toxic|difficult|slow|burnout|underpaid/i.test(r.snippet)) data.cons.push(r.snippet.slice(0, 200));
-    // Track Glassdoor/Comparably URLs to visit for full data below
-    if (lower.includes('glassdoor.com') || lower.includes('comparably.com')) {
-      sources.push({ url: r.link, type: 'glassdoor', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
+  }
+
+  // Strategy 1b: Try fetching the Glassdoor Reviews page directly.
+  // Cloudflare blocks most datacenter IPs, but when it does get through, the page
+  // contains JSON-LD with the aggregate rating and review count — more reliable than snippets.
+  if (glassdoorDirectUrl && (!data.overallRating || !data.reviewCount)) {
+    const gdHtml = await fetchGlassdoor(glassdoorDirectUrl);
+    if (gdHtml && gdHtml.length > 1000) {
+      // JSON-LD structured data — present even if JS hasn't rendered the reviews
+      const ldMatches = gdHtml.matchAll(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi);
+      for (const m of ldMatches) {
+        try {
+          const json = JSON.parse(m[1]);
+          const rating = json?.aggregateRating?.ratingValue;
+          const count = json?.aggregateRating?.reviewCount;
+          if (rating && !data.overallRating) data.overallRating = parseFloat(rating);
+          if (count && !data.reviewCount) data.reviewCount = parseInt(String(count).replace(/,/g, ''));
+        } catch { /* skip malformed JSON-LD */ }
+      }
+      parseGlassdoorHtml(gdHtml, data, glassdoorDirectUrl, sources, companyName);
     }
   }
 
