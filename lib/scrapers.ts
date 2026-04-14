@@ -334,6 +334,33 @@ async function fetchGlassdoor(url: string): Promise<string> {
   });
 }
 
+// Extract Apollo GraphQL state embedded in Glassdoor pages as window.__INITIAL_STATE__.apolloState
+// The full company object lives under keys like "Employer:12345" in this JSON blob.
+function extractApolloState(html: string): Record<string, unknown> | null {
+  const idx = html.indexOf('"apolloState":');
+  if (idx === -1) return null;
+  const start = html.indexOf('{', idx);
+  if (start === -1) return null;
+  // Walk balanced braces — more robust than a greedy regex across minified JS
+  let depth = 0, inString = false, escape = false;
+  for (let i = start; i < html.length; i++) {
+    const ch = html[i];
+    if (escape) { escape = false; continue; }
+    if (ch === '\\' && inString) { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        try { return JSON.parse(html.slice(start, i + 1)) as Record<string, unknown>; }
+        catch { return null; }
+      }
+    }
+  }
+  return null;
+}
+
 function parseGlassdoorHtml(html: string, data: GlassdoorData, url: string, sources: ScrapedSource[], companyName: string) {
   const $ = cheerio.load(html);
   const bodyText = $('body').text();
@@ -442,23 +469,56 @@ export async function scrapeGlassdoor(
     }
   }
 
-  // Strategy 1b: Try fetching the Glassdoor Reviews page directly.
-  // Cloudflare blocks most datacenter IPs, but when it does get through, the page
-  // contains JSON-LD with the aggregate rating and review count — more reliable than snippets.
-  if (glassdoorDirectUrl && (!data.overallRating || !data.reviewCount)) {
+  // Strategy 1b: Fetch the Glassdoor Reviews page and extract Apollo GraphQL state.
+  // Glassdoor embeds the full company data object as window.__INITIAL_STATE__.apolloState —
+  // Employer:* keys hold rating, CEO approval, recommend%, and Review:* keys hold pros/cons.
+  // This beats JSON-LD (which only has aggregateRating) and HTML scraping (defeated by Cloudflare JS).
+  if (glassdoorDirectUrl) {
     const gdHtml = await fetchGlassdoor(glassdoorDirectUrl);
     if (gdHtml && gdHtml.length > 1000) {
-      // JSON-LD structured data — present even if JS hasn't rendered the reviews
-      const ldMatches = gdHtml.matchAll(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi);
-      for (const m of ldMatches) {
-        try {
-          const json = JSON.parse(m[1]);
-          const rating = json?.aggregateRating?.ratingValue;
-          const count = json?.aggregateRating?.reviewCount;
-          if (rating && !data.overallRating) data.overallRating = parseFloat(rating);
-          if (count && !data.reviewCount) data.reviewCount = parseInt(String(count).replace(/,/g, ''));
-        } catch { /* skip malformed JSON-LD */ }
+      // Primary: Apollo state (company + review objects embedded as JSON in page source)
+      const apolloState = extractApolloState(gdHtml);
+      if (apolloState) {
+        const employerEntry = Object.entries(apolloState).find(([k]) => k.startsWith('Employer:'));
+        if (employerEntry) {
+          const emp = employerEntry[1] as Record<string, unknown>;
+          if (emp.overallRating && !data.overallRating)
+            data.overallRating = typeof emp.overallRating === 'number' ? emp.overallRating : parseFloat(String(emp.overallRating));
+          if (emp.numberOfRatings && !data.reviewCount)
+            data.reviewCount = typeof emp.numberOfRatings === 'number' ? emp.numberOfRatings : parseInt(String(emp.numberOfRatings));
+          if (emp.recommendToFriendPercent && !data.recommendToFriend)
+            data.recommendToFriend = typeof emp.recommendToFriendPercent === 'number' ? emp.recommendToFriendPercent : parseInt(String(emp.recommendToFriendPercent));
+          // CEO object may be inlined or referenced
+          const ceoObj = emp.ceo as Record<string, unknown> | undefined;
+          if (ceoObj?.name && !data.ceoName) data.ceoName = String(ceoObj.name);
+          if (ceoObj?.approvalPercent && !data.ceoApproval)
+            data.ceoApproval = typeof ceoObj.approvalPercent === 'number' ? ceoObj.approvalPercent : parseInt(String(ceoObj.approvalPercent));
+        }
+        // Review:* entries contain actual pros/cons text
+        const reviewEntries = Object.entries(apolloState)
+          .filter(([k]) => k.startsWith('Review:'))
+          .map(([, v]) => v as Record<string, unknown>);
+        for (const review of reviewEntries.slice(0, 20)) {
+          const pros = review.pros as string | undefined;
+          const cons = review.cons as string | undefined;
+          if (pros && pros.length > 15 && data.pros.length < 8) data.pros.push(pros.slice(0, 200));
+          if (cons && cons.length > 15 && data.cons.length < 8) data.cons.push(cons.slice(0, 200));
+        }
       }
+      // Fallback: JSON-LD aggregateRating (present even when Cloudflare blocks JS execution)
+      if (!data.overallRating || !data.reviewCount) {
+        const ldMatches = gdHtml.matchAll(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi);
+        for (const m of ldMatches) {
+          try {
+            const json = JSON.parse(m[1]);
+            const rating = json?.aggregateRating?.ratingValue;
+            const count = json?.aggregateRating?.reviewCount;
+            if (rating && !data.overallRating) data.overallRating = parseFloat(rating);
+            if (count && !data.reviewCount) data.reviewCount = parseInt(String(count).replace(/,/g, ''));
+          } catch { /* skip malformed JSON-LD */ }
+        }
+      }
+      // Fallback: HTML selector parsing
       parseGlassdoorHtml(gdHtml, data, glassdoorDirectUrl, sources, companyName);
     }
   }
