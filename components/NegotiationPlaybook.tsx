@@ -7,7 +7,7 @@ interface Props {
 }
 
 export default function NegotiationPlaybook({ playbook }: Props) {
-  if (!playbook) return null;
+  if (!playbook || !Array.isArray(playbook.levers)) return null;
 
   return (
     <div className="glass rounded-2xl p-6 border border-indigo-500/20 glow-indigo">
@@ -25,7 +25,7 @@ export default function NegotiationPlaybook({ playbook }: Props) {
             <span className="text-center">Negotiable</span>
             <span className="text-center">Priority</span>
           </div>
-          {playbook.levers.sort((a, b) => a.priority - b.priority).map((lever, i) => (
+          {[...playbook.levers].sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99)).map((lever, i) => (
             <div key={i} className="grid grid-cols-3 px-4 py-3 border-t border-[#1e2736] hover:bg-[#0d1117]/50 transition-colors">
               <span className="text-sm text-white">{lever.lever}</span>
               <div className="text-center">

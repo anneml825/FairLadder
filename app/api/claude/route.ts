@@ -98,6 +98,7 @@ export async function POST(req: NextRequest) {
 FORMATTING RULES — strictly follow:
 - Text fields (companyIntelligence, roleIntelligence, salaryAnalysis, offerAnalysis): max 3-4 SHORT sentences total. No essays. Use **bold** for key facts/numbers. Bullet points (•) for 3+ items only.
 - Timeline sourceUrl: copy the exact URL from [URL:...] tags in the news data for each timeline event. Use empty string "" if no matching URL.
+- roleScorecard "Posting Age Signal": if postedDate is provided, calculate how long ago it was posted and flag if >45 days (stale req). If no postedDate, analyze based on company hiring velocity signals from news/Reddit — is the company actively hiring or in a freeze? NEVER just write "no posting date provided" as the only insight.
 - Never say "cannot determine" or "data unavailable". Always reason from available signals.
 - Numeric fields (radar scores, salaries): ground in actual scraped data. Glassdoor 3.8 → use 3.8. BLS $112k → use it. Estimate conservatively if missing, note it in text only.
 - Radar scores must reflect data: low Glassdoor = low culture, layoff signals = low financial stability. Do not default to 5.
@@ -109,6 +110,7 @@ CANDIDATE: Location: ${request.location}
 Desired salary: $${request.desiredSalaryMin?.toLocaleString()}–$${request.desiredSalaryMax?.toLocaleString()}${request.postedSalaryMin ? `\nPosted salary in listing: $${request.postedSalaryMin?.toLocaleString()}–$${request.postedSalaryMax?.toLocaleString()} — analyze whether this range is a lowball anchor or fair` : '\nPosted salary: not listed in the posting'}
 
 JOB POSTING:
+${scrapedData.jobPosting?.postedDate ? `Posted: ${scrapedData.jobPosting.postedDate}` : 'Posted date: not found — analyze hiring velocity from other signals'}
 ${jobText.slice(0, 2500)}
 
 COMPANY REVIEWS & CULTURE:

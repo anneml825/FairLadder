@@ -85,36 +85,28 @@ export async function scrapeGoogleNews(
 ): Promise<{ results: GoogleNewsResult[]; sources: ScrapedSource[] }> {
   const results: GoogleNewsResult[] = [];
   const sources: ScrapedSource[] = [];
+  const seenUrls = new Set<string>();
 
+  // 6 targeted, company-specific queries — quality over quantity.
+  // Each query must return articles that are ABOUT the company, not just mentioning it in passing.
   const queries = [
-    // Company health & stability
-    `${companyName} layoffs OR "reduction in force" OR "job cuts" OR downsizing OR restructuring`,
-    `${companyName} acquisition OR merger OR "going public" OR IPO OR SPAC OR valuation`,
-    `${companyName} revenue OR earnings OR profit OR "quarterly results" OR "annual report"`,
-    `${companyName} funding OR "series A" OR "series B" OR "series C" OR investment OR raised`,
-    // Leadership & culture
-    `${companyName} CEO OR CTO OR CFO OR "executive departure" OR resignation OR "new leadership"`,
-    `${companyName} culture OR "employee reviews" OR "work environment" OR "great place to work"`,
-    `${companyName} "work life balance" OR overtime OR burnout OR "crunch" OR "long hours"`,
-    `${companyName} benefits OR "health insurance" OR 401k OR "parental leave" OR perks`,
-    // Hiring & workforce
-    `${companyName} hiring OR headcount OR "team growth" OR "new office" OR expansion`,
-    `${companyName} "return to office" OR RTO OR remote OR hybrid OR "work from home"`,
-    `site:glassdoor.com "${companyName}" reviews rating culture`,
-    // Legal & regulatory
-    `${companyName} lawsuit OR regulatory OR investigation OR fine OR SEC OR DOJ OR NLRB`,
-    // Role-specific pay
-    `${companyName} salary OR compensation OR pay OR raise OR bonus OR equity OR "pay band"`,
-    // Product & strategy (future health signal)
-    `${companyName} product OR launch OR partnership OR "market share" OR competitor OR pivot`,
+    `"${companyName}" layoffs OR "job cuts" OR "reduction in force" OR downsizing OR restructuring`,
+    `"${companyName}" acquisition OR merger OR IPO OR "going public" OR bankruptcy OR valuation`,
+    `"${companyName}" earnings OR revenue OR profit OR "quarterly results" OR "financial results"`,
+    `"${companyName}" CEO OR CFO OR CTO OR "executive departure" OR resignation OR leadership`,
+    `"${companyName}" lawsuit OR investigation OR fine OR regulatory OR fraud OR NLRB`,
+    `"${companyName}" employees OR culture OR "work environment" OR glassdoor OR "employee reviews"`,
   ];
 
-  // Role-specific queries
-  if (role && role.length > 2) {
-    queries.push(`${companyName} "${role}" team hiring growth`);
-    queries.push(`"${role}" ${companyName} salary compensation pay band`);
-    queries.push(`"${role}" salary "${companyName}" levels experience`);
+  // Only add role query when role is a real job title (not a company tagline)
+  if (role && role.length > 3 && role.length < 60 && !/connecting|talent|opportunity|markets/i.test(role)) {
+    queries.push(`"${companyName}" "${role}" salary OR compensation OR hiring`);
   }
+
+  // Keyword that must appear in title to keep the article — prevents off-topic noise.
+  // Take the longest word in the company name as the anchor (e.g. "StoneX" from "StoneX Group").
+  const companyWords = companyName.split(/\s+/).filter(w => w.length >= 4);
+  const anchor = companyWords.sort((a, b) => b.length - a.length)[0]?.toLowerCase() || companyName.toLowerCase();
 
   for (const q of queries) {
     const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=en-US&gl=US&ceid=US:en`;
@@ -129,25 +121,18 @@ export async function scrapeGoogleNews(
       const source = $(el).find('source').text().trim();
       const description = $(el).find('description').text().replace(/<[^>]*>/g, '').trim().slice(0, 300);
 
-      if (title && link) {
-        results.push({
-          title,
-          url: link,
-          summary: description,
-          publishedAt: pubDate,
-          source: source || 'Google News',
-        });
-        sources.push({
-          url: link,
-          type: 'google-news',
-          title,
-          timestamp: pubDate || new Date().toISOString(),
-        });
-      }
+      if (!title || !link || seenUrls.has(link)) return;
+
+      // Only keep articles where the company name appears in the title (filters tangential noise)
+      if (!title.toLowerCase().includes(anchor)) return;
+
+      seenUrls.add(link);
+      results.push({ title, url: link, summary: description, publishedAt: pubDate, source: source || 'Google News' });
+      sources.push({ url: link, type: 'google-news', title, timestamp: pubDate || new Date().toISOString() });
     });
   }
 
-  return { results: results.slice(0, 100), sources: sources.slice(0, 100) };
+  return { results: results.slice(0, 50), sources: sources.slice(0, 50) };
 }
 
 // ── REDDIT ───────────────────────────────────────────────────────────────────
@@ -229,16 +214,16 @@ export async function scrapeReddit(
     sources.push({ url: p.url, type: 'reddit', title: p.title.slice(0, 120), timestamp: new Date().toISOString() });
   };
 
-  // Primary: SerpAPI → site:reddit.com Google search → fetch each thread's .json
+  // Primary: Serper.dev (2500 free) or SerpAPI fallback → site:reddit.com Google search → fetch each thread's .json
   // This gives us real Google-ranked Reddit results + full thread content
   const serpQueries = [
     `site:reddit.com "${companyName}" employees culture work experience`,
     `site:reddit.com "${companyName}" salary compensation pay`,
     `site:reddit.com "${companyName}" interview hiring layoffs`,
-    role ? `site:reddit.com "${companyName}" "${role}"` : `site:reddit.com "${companyName}" career`,
+    role && role.length < 60 ? `site:reddit.com "${companyName}" "${role}"` : `site:reddit.com "${companyName}" career`,
   ];
   for (const q of serpQueries) {
-    const results = await searchSerp(q, 8);
+    const results = await searchWeb(q, 8);
     for (const r of results) {
       if (!r.link.includes('reddit.com/r/') || seen.has(r.link)) continue;
       seen.add(r.link);
@@ -878,7 +863,34 @@ export async function scrapeSEC(
     } catch { /* JSON parse error */ }
   }
 
-  // Financial signals via Google News RSS (DDG Lite blocks datacenter IPs)
+  // Annual/Quarterly filings (10-K, 10-Q) — key for public companies
+  const oneYearAgo = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  const today = new Date().toISOString().split('T')[0];
+  const annualUrl = `https://efts.sec.gov/LATEST/search-index?q=%22${encodeURIComponent(companyName)}%22&forms=10-K,10-Q&dateRange=custom&startdt=${oneYearAgo}&enddt=${today}`;
+  const annualHtml = await fetchHtml(annualUrl, { Accept: 'application/json', Referer: 'https://efts.sec.gov/' });
+  if (annualHtml) {
+    try {
+      const annualJson = JSON.parse(annualHtml);
+      const annualHits = annualJson?.hits?.hits || [];
+      for (const hit of annualHits.slice(0, 4)) {
+        const src = hit._source;
+        const formType = src?.form_type || '10-K';
+        const filingDate = src?.file_date || src?.period_of_report || '';
+        const accNo = src?.accession_no?.replace(/-/g, '') || '';
+        const filingUrl = accNo
+          ? `https://www.sec.gov/Archives/edgar/data/${src?.entity_id}/${accNo}/${accNo}-index.htm`
+          : `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=${encodeURIComponent(companyName)}&type=${formType}`;
+        data.filings.push({ date: filingDate, type: formType, description: `${formType} — ${companyName} (${filingDate})`, url: filingUrl });
+        sources.push({ url: filingUrl, type: 'sec', title: `${companyName} ${formType} — ${filingDate}`, timestamp: filingDate || new Date().toISOString() });
+        // If we found annual filings, flag company as public
+        if (!data.financialSignals.includes('Public company — SEC annual filings available')) {
+          data.financialSignals.push('Public company — SEC annual filings available');
+        }
+      }
+    } catch { /* not a public company or no filings */ }
+  }
+
+  // Financial signals via Google News RSS
   const finQuery = `"${companyName}" revenue earnings profit financial results 2024 2025`;
   const finRss = await fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(finQuery)}&hl=en-US&gl=US&ceid=US:en`);
   if (finRss && finRss.length > 500) {
@@ -1092,4 +1104,27 @@ export async function scrapeJobPosting(
   });
 
   return { data, sources };
+}
+
+// ── FIND JOB POSTING URL ──────────────────────────────────────────────────────
+// When a user pastes job text (no URL), use Serper to find the actual posting
+// on a job board so we can get structured data like postedDate and salary.
+
+const JOB_BOARD_RE = /greenhouse\.io|lever\.co|ashbyhq\.com|myworkdayjobs\.com|workday\.com|smartrecruiters\.com|icims\.com|bamboohr\.com|breezy\.hr|jobvite\.com|recruitee\.com|workable\.com|taleo\.net|jobs\.lever\.co|boards\.greenhouse\.io/i;
+
+export async function findJobPostingUrl(companyName: string, role: string): Promise<string | null> {
+  if (!role || role.length > 80) return null;
+
+  const queries = [
+    `"${companyName}" "${role}" site:greenhouse.io OR site:boards.greenhouse.io OR site:lever.co OR site:jobs.lever.co OR site:ashbyhq.com`,
+    `"${companyName}" "${role}" site:myworkdayjobs.com OR site:smartrecruiters.com OR site:icims.com OR site:bamboohr.com`,
+    `"${companyName}" "${role}" job apply now 2024 2025`,
+  ];
+
+  for (const q of queries) {
+    const results = await searchWeb(q, 5);
+    const jobResult = results.find(r => JOB_BOARD_RE.test(r.link));
+    if (jobResult) return jobResult.link;
+  }
+  return null;
 }

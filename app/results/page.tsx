@@ -333,8 +333,8 @@ export default function ResultsPage() {
               <p className="text-sm text-[#c8d0e0] leading-relaxed whitespace-pre-wrap">{renderMd(result.salaryAnalysis)}</p>
             </div>
 
-            {/* BLS data */}
-            {result.rawData?.bls && (
+            {/* BLS data — only show when we actually have salary figures */}
+            {result.rawData?.bls?.medianSalary && (
               <div className="glass rounded-2xl p-6 border border-[#1e2736]">
                 <h3 className="text-sm font-semibold text-white uppercase tracking-wide mb-4">BLS Market Data</h3>
                 <div className="text-xs text-[#8892a4] mb-3">{result.rawData.bls.occupationTitle}</div>

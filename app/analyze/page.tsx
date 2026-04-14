@@ -138,21 +138,40 @@ export default function AnalyzePage() {
         } else if (signal.aborted) return;
         else setStep('job', { status: 'done', count: 0 });
       } else {
-        // Paste mode — extract job title from first meaningful line of pasted text
+        // Paste mode — extract a clean job title from the pasted text
         const pastedLines = (request.jobText || '').split('\n').map(l => l.trim()).filter(Boolean);
+        // Skip lines that look like company slogans/taglines/addresses
         const extractedTitle = pastedLines.find(
-          l => l.length > 3 && l.length < 100 &&
-               !l.toLowerCase().includes(request.companyName.toLowerCase()) &&
-               !/^(about|we are|we're|join|apply|the role|overview|description|location|salary|benefits|requirements)/i.test(l)
+          l => l.length > 3 && l.length < 80 &&
+               !l.toLowerCase().includes(request.companyName.toLowerCase().split(' ')[0]) &&
+               !/^(about|we are|we're|join|apply|the role|overview|description|location|salary|benefits|requirements|connecting|talent|opportunity|our|the company|who we|what we)/i.test(l) &&
+               !/^\d|^https?:|—|–/.test(l) &&
+               /[A-Z]/.test(l) // must have at least one capital letter (title-like)
         ) || pastedLines[0] || '';
+
+        // Try to find the actual job posting URL to get postedDate
+        setStep('job', { status: 'running' });
+        const jobSearchRes = await fetchStep<{ data: JobPostingData; sources: ScrapedSource[]; foundUrl?: string }>(
+          'job', '/api/scrape/job', { companyName: request.companyName, role: extractedTitle }, signal,
+        );
+
         jobPosting = {
-          title: extractedTitle, company: request.companyName, location: request.location,
-          salaryRange: null, requirements: [], responsibilities: [], benefits: [],
-          remotePolicy: 'Not specified', postedDate: '', fullText: request.jobText || '',
+          title: jobSearchRes?.data?.title || extractedTitle,
+          company: request.companyName,
+          location: jobSearchRes?.data?.location || request.location,
+          salaryRange: jobSearchRes?.data?.salaryRange || null,
+          requirements: jobSearchRes?.data?.requirements || [],
+          responsibilities: jobSearchRes?.data?.responsibilities || [],
+          benefits: jobSearchRes?.data?.benefits || [],
+          remotePolicy: jobSearchRes?.data?.remotePolicy || 'Not specified',
+          // Use posted date from the found posting — this is the key value
+          postedDate: jobSearchRes?.data?.postedDate || '',
+          // Always use pasted text as the fullText — most accurate
+          fullText: request.jobText || '',
           isRepost: false,
         };
+        addSources(jobSearchRes?.sources?.length || 1);
         setStep('job', { status: 'done', count: 1 });
-        addSources(1);
       }
 
       const role = jobPosting?.title || '';
