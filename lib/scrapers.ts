@@ -1199,6 +1199,35 @@ export async function scrapeSEC(
   const edgarUrl = `https://efts.sec.gov/LATEST/search-index?q=%22${encodeURIComponent(companyName)}%22+%22layoff%22&forms=8-K&dateRange=custom&startdt=${new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]}&enddt=${new Date().toISOString().split('T')[0]}`;
   sources.push({ url: edgarUrl, type: 'sec', title: `SEC EDGAR - ${companyName} filings`, timestamp: new Date().toISOString() });
 
+  // WARN Act — federally mandated mass layoff notices (50+ employees, 60-day advance notice)
+  // Companies must file with state agencies. Data is completely public, scraped from aggregators.
+  // This is a killer signal: formal WARN filing = verified, documented layoff, not rumor.
+  const warnQueries = [
+    `"${companyName}" WARN Act layoff notice site:warn.workforcegps.org OR site:edd.ca.gov OR site:labor.ny.gov`,
+    `"${companyName}" WARN Act "mass layoff" OR "plant closing" notice`,
+  ];
+  const [warnRes1, warnRes2] = await Promise.all(warnQueries.map(q => searchWeb(q, 5)));
+  for (const r of [...warnRes1, ...warnRes2]) {
+    const text = `${r.title} ${r.snippet}`;
+    if (/warn act|mass layoff|plant closing|workforce reduction/i.test(text)) {
+      const dateM = text.match(/\b(20\d\d)\b/);
+      const countM = text.match(/(\d[\d,]+)\s*(?:employees?|workers?|jobs?)/i);
+      const signal = `WARN Act filing: ${companyName}${countM ? ` — ${countM[0]}` : ''}${dateM ? ` (${dateM[1]})` : ''}`;
+      if (!data.layoffSignals.includes(signal)) data.layoffSignals.push(signal);
+      sources.push({ url: r.link, type: 'sec', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
+    }
+  }
+  // Also check layoffs.fyi — crowd-sourced but very comprehensive for tech layoffs
+  const layoffsFyiRes = await searchWeb(`site:layoffs.fyi "${companyName}" layoff`, 4);
+  for (const r of layoffsFyiRes) {
+    if (!r.link.includes('layoffs.fyi')) continue;
+    const text = `${r.title} ${r.snippet}`;
+    const countM = text.match(/(\d[\d,]+)\s*(?:employees?|workers?|jobs?|people)/i);
+    const dateM = text.match(/\b(20\d\d)\b/);
+    data.layoffSignals.push(`Layoffs.fyi: ${companyName}${countM ? ` — ${countM[0]} affected` : ''}${dateM ? ` (${dateM[1]})` : ''}`);
+    sources.push({ url: r.link, type: 'sec', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
+  }
+
   // Crunchbase — funding rounds, investors, headcount, founding year
   // Public data is indexed by Google so Serper gives us the key facts
   const cbResults = await searchWeb(`site:crunchbase.com "${companyName}" funding investors`, 5);
@@ -1225,6 +1254,21 @@ export async function scrapeSEC(
     if (fundM) data.fundingSignals.push(`Pitchbook: ${r.title.slice(0, 80)} — ${fundM[0]}`);
     if (r.link.includes('pitchbook.com')) {
       sources.push({ url: r.link, type: 'crunchbase', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
+    }
+  }
+
+  // LinkedIn company page via Serper — Google indexes employee count, specialties, recent activity
+  // Direct scrape is blocked but snippet data is reliable for headcount signals
+  const [liCompanyRes, liActivityRes] = await Promise.all([
+    searchWeb(`site:linkedin.com/company "${companyName}" employees`, 4),
+    searchWeb(`"${companyName}" linkedin hiring layoffs headcount 2024 2025`, 4),
+  ]);
+  for (const r of [...liCompanyRes, ...liActivityRes]) {
+    const text = `${r.title} ${r.snippet}`;
+    const empM = text.match(/([\d,]+(?:-[\d,]+)?)\s*employees?/i);
+    if (empM) data.financialSignals.push(`LinkedIn: ~${empM[1]} employees`);
+    if (r.link.includes('linkedin.com/company')) {
+      sources.push({ url: r.link, type: 'sec', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
     }
   }
 
