@@ -593,7 +593,33 @@ export async function scrapeLevels(
   const sources: ScrapedSource[] = [];
   const data: LevelsData = { targetRoleSalaries: [], comparableSalaries: [] };
 
-  // Google News RSS — company-specific salary articles (DDG Lite blocks datacenter IPs)
+  // Primary: Serper.dev / SerpAPI web search for salary data — snippets from salary sites
+  // contain actual dollar figures unlike news articles
+  const serpSalaryQueries = [
+    `"${companyName}" "${role}" salary compensation base pay`,
+    `"${role}" average salary ${location} 2024 2025`,
+    `"${role}" salary range levels compensation`,
+  ];
+  for (const q of serpSalaryQueries) {
+    const results = await searchWeb(q, 10);
+    const allSnippets = results.map(r => `${r.title} ${r.snippet}`).join(' ');
+    const salaries = extractSalaries(allSnippets);
+    if (salaries.length > 0) {
+      const sorted = salaries.sort((a, b) => a - b);
+      const median = sorted[Math.floor(sorted.length / 2)];
+      if (data.targetRoleSalaries.length === 0 && q.includes(companyName)) {
+        data.targetRoleSalaries.push({ company: companyName, role, base: median, totalComp: Math.round(median * 1.3), location });
+      } else if (data.comparableSalaries.length < 8) {
+        const source = results[0]?.link.match(/(?:salary\.com|glassdoor\.com|levels\.fyi|ziprecruiter\.com|indeed\.com|builtin\.com)/)?.[0] || 'Market data';
+        data.comparableSalaries.push({ company: source, base: median, totalComp: Math.round(median * 1.3) });
+      }
+      for (const r of results.slice(0, 3)) {
+        sources.push({ url: r.link, type: 'levels', title: r.title.slice(0, 80), timestamp: new Date().toISOString() });
+      }
+    }
+  }
+
+  // Google News RSS — company-specific salary articles
   const companyQuery = `"${companyName}" "${role}" salary compensation`;
   const rss1 = await fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(companyQuery)}&hl=en-US&gl=US&ceid=US:en`);
   if (rss1 && rss1.length > 500) {
@@ -605,7 +631,7 @@ export async function scrapeLevels(
       allText.push(`${title} ${desc}`);
     });
     const salaries = extractSalaries(allText.join(' '));
-    if (salaries.length > 0) {
+    if (salaries.length > 0 && data.targetRoleSalaries.length === 0) {
       const avg = Math.round(salaries.reduce((a, b) => a + b, 0) / salaries.length);
       data.targetRoleSalaries.push({ company: companyName, role, base: avg, totalComp: Math.round(avg * 1.3), location });
     }
