@@ -220,6 +220,18 @@ export default function ResultsPage() {
                 <p className="text-sm text-[#c8d0e0] leading-relaxed whitespace-pre-wrap">{renderMd(result.companyIntelligence)}</p>
               </div>
 
+              {/* Data gaps — sources that returned no useful data */}
+              {result.dataGaps && result.dataGaps.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {result.dataGaps.map((gap, i) => (
+                    <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-[#1a2033] text-[#6b7a94] border border-[#1e2736]">
+                      {gap}
+                    </span>
+                  ))}
+                  <span className="text-xs px-2 py-0.5 text-[#4b5568] italic">data not found</span>
+                </div>
+              )}
+
               {/* Glassdoor snapshot */}
               {result.rawData?.glassdoor && (
                 <div className="mt-4 pt-4 border-t border-[#1e2736]">

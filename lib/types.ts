@@ -205,6 +205,7 @@ export interface AnalysisResult {
   roleIntelligence: string;
   salaryAnalysis: string;
   offerAnalysis?: string;
+  dataGaps?: string[];
   bottomLine: string;
 
   rawData: {

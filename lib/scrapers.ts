@@ -132,7 +132,7 @@ export async function scrapeGoogleNews(
     });
   }
 
-  return { results: results.slice(0, 50), sources: sources.slice(0, 50) };
+  return { results: results.slice(0, 20), sources: sources.slice(0, 20) };
 }
 
 // ── REDDIT ───────────────────────────────────────────────────────────────────
@@ -470,8 +470,10 @@ export async function scrapeGlassdoor(
           data.cons.push(r.snippet.slice(0, 200));
         }
       }
-      // Track the first Glassdoor Reviews URL we find — try fetching it directly below
-      if (!glassdoorDirectUrl && lower.includes('glassdoor.com') && (lower.includes('/reviews/') || lower.includes('-reviews-'))) {
+      // Track the first Glassdoor company URL (Reviews or Overview) for direct fetch
+      if (!glassdoorDirectUrl && lower.includes('glassdoor.com') &&
+          (lower.includes('/reviews/') || lower.includes('-reviews-') ||
+           lower.includes('/overview/') || lower.includes('-overview-') || lower.includes('/working-at-'))) {
         glassdoorDirectUrl = r.link;
         sources.push({ url: r.link, type: 'glassdoor', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
       } else if (lower.includes('comparably.com')) {
@@ -852,7 +854,7 @@ export async function scrapeBLS(
     const results = await searchWeb(q, 8);
     if (results.length > 0) {
       allSalarySnippets.push(...results.map(r => `${r.title} ${r.snippet}`));
-      for (const r of results.slice(0, 2)) {
+      for (const r of results.slice(0, 4)) {
         sources.push({ url: r.link, type: 'bls', title: r.title.slice(0, 80), timestamp: new Date().toISOString() });
       }
     }
