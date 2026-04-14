@@ -111,9 +111,12 @@ export default function AnalyzePage() {
 
   useEffect(() => {
     const stored = sessionStorage.getItem('fairladder_request');
-    if (!stored) { router.push('/'); return; }
+    if (!stored) { router.replace('/'); return; }
 
     const request: AnalysisRequest = JSON.parse(stored);
+    // Remove the request immediately so a stale back-navigate can't re-trigger the analysis
+    sessionStorage.removeItem('fairladder_request');
+
     abortRef.current = new AbortController();
     const signal = abortRef.current.signal;
 
@@ -307,7 +310,7 @@ export default function AnalyzePage() {
               } else if (data.type === 'result') {
                 setStep('claude', { status: 'done', count: 1 });
                 sessionStorage.setItem('fairladder_result', JSON.stringify(data.data));
-                router.push('/results');
+                router.replace('/results');
               } else if (data.type === 'error') {
                 setStep('claude', { status: 'error', error: data.message });
                 setError(data.message || 'Analysis failed');
