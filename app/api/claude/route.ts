@@ -126,10 +126,11 @@ ${scrapedData.jobPosting?.postedDate ? `Posted: ${scrapedData.jobPosting.postedD
 ${jobText.slice(0, 2500)}
 
 COMPANY REVIEWS & CULTURE:
-Rating: ${scrapedData.glassdoor?.overallRating ?? 'not scraped'}/5 | Reviews: ${scrapedData.glassdoor?.reviewCount ?? '?'} | CEO: ${scrapedData.glassdoor?.ceoName ?? 'unknown'} | CEO approval: ${scrapedData.glassdoor?.ceoApproval ?? '?'}% | Recommend: ${scrapedData.glassdoor?.recommendToFriend ?? '?'}%
+Glassdoor: ${scrapedData.glassdoor?.overallRating ?? '?'}/5 | ${scrapedData.glassdoor?.reviewCount ?? '?'} reviews | CEO: ${scrapedData.glassdoor?.ceoName ?? 'unknown'} | CEO approval: ${scrapedData.glassdoor?.ceoApproval ?? '?'}% | Recommend: ${scrapedData.glassdoor?.recommendToFriend ?? '?'}%
+Blind (anonymous): ${scrapedData.glassdoor?.blindRating ? `${scrapedData.glassdoor.blindRating}/5` : 'no data'} | Posts: ${scrapedData.glassdoor?.blindPosts?.slice(0, 3).join(' | ') || 'none'}
 Rating trend: ${scrapedData.glassdoor?.ratingTrend || 'unknown — infer from review language and news recency'}
-Employee pros (verbatim themes): ${scrapedData.glassdoor?.pros?.slice(0, 5).join(' | ') || 'none scraped'}
-Employee cons (verbatim themes): ${scrapedData.glassdoor?.cons?.slice(0, 5).join(' | ') || 'none scraped'}
+Employee pros (verbatim themes): ${scrapedData.glassdoor?.pros?.slice(0, 6).join(' | ') || 'none scraped'}
+Employee cons (verbatim themes): ${scrapedData.glassdoor?.cons?.slice(0, 6).join(' | ') || 'none scraped'}
 Interview difficulty: ${scrapedData.glassdoor?.interviewDifficulty ?? '?'}/5 | Interview experience: ${scrapedData.glassdoor?.interviewExperience ? `${scrapedData.glassdoor.interviewExperience.positive}% positive` : '?'}
 Interview quotes: ${scrapedData.glassdoor?.interviewQuotes?.slice(0, 2).join(' | ') || 'none'}
 
@@ -152,6 +153,7 @@ Funding history: ${scrapedData.sec?.fundingSignals?.join(' | ') || 'none'}
 
 SALARY DATA:
 BLS median: $${scrapedData.bls?.medianSalary?.toLocaleString() ?? 'not found'} | P10: $${scrapedData.bls?.p10?.toLocaleString() ?? '?'} | P25: $${scrapedData.bls?.p25?.toLocaleString() ?? '?'} | P75: $${scrapedData.bls?.p75?.toLocaleString() ?? '?'} | P90: $${scrapedData.bls?.p90?.toLocaleString() ?? '?'}
+H-1B DOL verified salaries (real wages paid by company): ${scrapedData.bls?.hibData ? `n=${scrapedData.bls.hibData.sampleSize}, median=$${scrapedData.bls.hibData.median.toLocaleString()}, range=$${scrapedData.bls.hibData.low.toLocaleString()}–$${scrapedData.bls.hibData.high.toLocaleString()}` : 'not found'}
 Location salary: ${scrapedData.bls?.locationData || 'not found'}
 Levels.fyi: ${scrapedData.levels?.targetRoleSalaries?.slice(0, 3).map(s => `${s.company} $${s.base?.toLocaleString()} base`).join(', ') || 'none found'}
 Comparable cos: ${scrapedData.levels?.comparableSalaries?.slice(0, 3).map(s => `${s.company} $${s.base?.toLocaleString()}`).join(', ') || 'none'}

@@ -132,7 +132,7 @@ export async function scrapeGoogleNews(
     });
   }
 
-  return { results: results.slice(0, 20), sources: sources.slice(0, 20) };
+  return { results: results.slice(0, 50), sources: sources.slice(0, 50) };
 }
 
 // ── REDDIT ───────────────────────────────────────────────────────────────────
@@ -678,6 +678,23 @@ export async function scrapeGlassdoor(
     }
   }
 
+  // Blind — anonymous employee posts, often more candid than Glassdoor
+  // Run in parallel with everything else already done above
+  const { rating: blindRating, posts: blindPosts, sources: blindSources } = await scrapeBlind(companyName);
+  if (blindRating !== null) data.blindRating = blindRating;
+  if (blindPosts.length > 0) {
+    data.blindPosts = blindPosts;
+    // Merge into pros/cons based on sentiment
+    for (const post of blindPosts) {
+      if (data.pros.length < 8 && /great|good|love|excellent|strong|best|flexible|remote|growth|pay|compensation/i.test(post)) {
+        data.pros.push(`[Blind] ${post.slice(0, 180)}`);
+      } else if (data.cons.length < 8 && /bad|toxic|poor|slow|burnout|underpaid|micromanage|politics|layoff|terrible|awful/i.test(post)) {
+        data.cons.push(`[Blind] ${post.slice(0, 180)}`);
+      }
+    }
+  }
+  sources.push(...blindSources);
+
   return { data, sources };
 }
 
@@ -825,7 +842,8 @@ export async function scrapeLevels(
 // ── BLS ──────────────────────────────────────────────────────────────────────
 export async function scrapeBLS(
   role: string,
-  location?: string
+  location?: string,
+  companyName?: string,
 ): Promise<{ data: BLSData; sources: ScrapedSource[] }> {
   const sources: ScrapedSource[] = [];
   const data: BLSData = {
@@ -936,6 +954,17 @@ export async function scrapeBLS(
     data.p90 = Math.round(data.medianSalary * 1.65);
   }
 
+  // H-1B DOL salary disclosure — real certified wages paid by this company
+  const { hibData, sources: hibSources } = companyName
+    ? await scrapeHIBSalaries(companyName, role)
+    : { hibData: undefined, sources: [] };
+  if (hibData) {
+    data.hibData = hibData;
+    // If H-1B data gives a better anchor than estimates, use it
+    if (!data.medianSalary) data.medianSalary = hibData.median;
+    sources.push(...hibSources);
+  }
+
   return { data, sources };
 }
 
@@ -943,6 +972,96 @@ function extractSalariesFromText(text: string): number[] {
   return extractSalaries(text);
 }
 
+// ── H-1B SALARY DISCLOSURE (DOL public LCA data via h1bdata.info) ─────────
+// The Department of Labor publishes every H-1B Labor Condition Application —
+// real certified wages for real positions at real companies. No estimates.
+async function scrapeHIBSalaries(
+  companyName: string,
+  role: string,
+): Promise<{ hibData: BLSData['hibData']; sources: ScrapedSource[] }> {
+  const sources: ScrapedSource[] = [];
+  const salaries: number[] = [];
+
+  // Serper: Google has cached h1bdata.info tables — fast path
+  const serperRes = await searchWeb(`site:h1bdata.info "${companyName}"`, 5);
+  for (const r of serperRes) {
+    if (!r.link.includes('h1bdata.info')) continue;
+    const nums = extractSalaries(`${r.title} ${r.snippet}`);
+    salaries.push(...nums.filter(n => n > 30000 && n < 600000));
+    sources.push({ url: r.link, type: 'bls', title: r.title.slice(0, 80), timestamp: new Date().toISOString() });
+  }
+
+  // Direct fetch — h1bdata.info returns an HTML table with certified wages
+  const companySlug = companyName.toLowerCase().replace(/[^a-z0-9]+/g, '+');
+  const roleSlug = role.toLowerCase().replace(/[^a-z0-9]+/g, '+');
+  const url = `https://h1bdata.info/index.php?em=${companySlug}&job=${roleSlug}&city=&year=All+Years`;
+  const html = await fetchHtml(url);
+  if (html && html.length > 500) {
+    const $ = cheerio.load(html);
+    $('table tbody tr').each((_, row) => {
+      const cells = $(row).find('td');
+      const salaryText = cells.eq(2).text().trim().replace(/[$,]/g, '');
+      const num = parseInt(salaryText);
+      if (!isNaN(num) && num > 30000 && num < 600000) salaries.push(num);
+    });
+    if (salaries.length > 0) {
+      sources.push({ url, type: 'bls', title: `H-1B DOL Data: ${companyName} — ${role}`, timestamp: new Date().toISOString() });
+    }
+  }
+
+  if (salaries.length === 0) return { hibData: undefined, sources };
+
+  salaries.sort((a, b) => a - b);
+  const median = salaries[Math.floor(salaries.length / 2)];
+  return {
+    hibData: { median, sampleSize: salaries.length, low: salaries[0], high: salaries[salaries.length - 1] },
+    sources,
+  };
+}
+
+// ── BLIND (teamblind.com — anonymous employee posts, more candid than GD) ──
+async function scrapeBlind(
+  companyName: string,
+): Promise<{ rating: number | null; posts: string[]; sources: ScrapedSource[] }> {
+  const sources: ScrapedSource[] = [];
+  let rating: number | null = null;
+  const posts: string[] = [];
+
+  // Serper: Google caches Blind company pages
+  const serperRes = await searchWeb(`"${companyName}" site:teamblind.com reviews`, 8);
+  for (const r of serperRes) {
+    if (!r.link.includes('teamblind.com')) continue;
+    const text = `${r.title} ${r.snippet}`;
+    if (!rating) {
+      const rM = text.match(/(\d\.\d)\s*(?:out of 5|stars?|\/5)/i);
+      if (rM) rating = parseFloat(rM[1]);
+    }
+    if (r.snippet.length > 30) posts.push(r.snippet.slice(0, 250));
+    sources.push({ url: r.link, type: 'glassdoor', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
+  }
+
+  // Direct fetch attempt (Blind has less aggressive bot detection than GD)
+  const slug = companyName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+  const url = `https://www.teamblind.com/company/${slug}/`;
+  const html = await fetchHtml(url, { Referer: 'https://www.google.com/' });
+  if (html && html.length > 2000) {
+    const $b = cheerio.load(html);
+    const bodyText = $b('body').text();
+    if (!rating) {
+      const rM = bodyText.match(/(\d\.\d)\s*(?:out of 5|\/5|stars?)/i);
+      if (rM) rating = parseFloat(rM[1]);
+    }
+    $b('[class*="review"], [class*="post"], [class*="content"], [class*="comment"]').each((_, el) => {
+      const t = $b(el).text().trim();
+      if (t.length > 30 && t.length < 500 && posts.length < 12) posts.push(t.slice(0, 250));
+    });
+    if (!sources.some(s => s.url === url)) {
+      sources.push({ url, type: 'glassdoor', title: `${companyName} — Blind Reviews`, timestamp: new Date().toISOString() });
+    }
+  }
+
+  return { rating, posts: posts.slice(0, 10), sources };
+}
 
 // ── SEC EDGAR ────────────────────────────────────────────────────────────────
 export async function scrapeSEC(
@@ -1076,14 +1195,38 @@ export async function scrapeSEC(
     });
   }
 
-  // Also try EDGAR full-text search
+  // EDGAR full-text layoff search
   const edgarUrl = `https://efts.sec.gov/LATEST/search-index?q=%22${encodeURIComponent(companyName)}%22+%22layoff%22&forms=8-K&dateRange=custom&startdt=${new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]}&enddt=${new Date().toISOString().split('T')[0]}`;
-  sources.push({
-    url: edgarUrl,
-    type: 'sec',
-    title: `SEC EDGAR - ${companyName} filings`,
-    timestamp: new Date().toISOString(),
-  });
+  sources.push({ url: edgarUrl, type: 'sec', title: `SEC EDGAR - ${companyName} filings`, timestamp: new Date().toISOString() });
+
+  // Crunchbase — funding rounds, investors, headcount, founding year
+  // Public data is indexed by Google so Serper gives us the key facts
+  const cbResults = await searchWeb(`site:crunchbase.com "${companyName}" funding investors`, 5);
+  for (const r of cbResults) {
+    if (!r.link.includes('crunchbase.com')) continue;
+    const text = `${r.title} ${r.snippet}`;
+    // Funding total
+    const fundM = text.match(/\$[\d.]+\s*(?:B|M|billion|million)\s*(?:total funding|raised|in funding)/i);
+    if (fundM) data.fundingSignals.push(`Crunchbase: ${fundM[0].trim()}`);
+    // Headcount
+    const empM = text.match(/([\d,]+(?:-[\d,]+)?)\s*employees?/i);
+    if (empM) data.financialSignals.push(`Crunchbase headcount: ${empM[1]} employees`);
+    // Investors
+    const invM = text.match(/(?:backed by|investors?(?:\s+include)?)[:\s]+([A-Z][^.]+(?:\.[^.]+){0,2})/i);
+    if (invM) data.fundingSignals.push(`Investors: ${invM[1].trim().slice(0, 120)}`);
+    sources.push({ url: r.link, type: 'crunchbase', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
+  }
+
+  // Pitchbook via Serper (paywalled but snippets have summary data)
+  const pbResults = await searchWeb(`"${companyName}" site:pitchbook.com OR "pitchbook" "${companyName}" funding employees`, 4);
+  for (const r of pbResults) {
+    const text = `${r.title} ${r.snippet}`;
+    const fundM = text.match(/\$[\d.]+\s*(?:B|M|billion|million)/i);
+    if (fundM) data.fundingSignals.push(`Pitchbook: ${r.title.slice(0, 80)} — ${fundM[0]}`);
+    if (r.link.includes('pitchbook.com')) {
+      sources.push({ url: r.link, type: 'crunchbase', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
+    }
+  }
 
   return { data, sources };
 }

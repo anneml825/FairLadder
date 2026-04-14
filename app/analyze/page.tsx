@@ -199,7 +199,7 @@ export default function AnalyzePage() {
         ),
 
         fetchStep<{ data: BLSData; sources: ScrapedSource[] }>(
-          'bls', '/api/scrape/bls', { role: role || 'professional worker', location: request.location }, signal,
+          'bls', '/api/scrape/bls', { role: role || 'professional worker', location: request.location, companyName: request.companyName }, signal,
         ),
 
         fetchStep<{ data: SECData; sources: ScrapedSource[] }>(

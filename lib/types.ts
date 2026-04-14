@@ -50,6 +50,8 @@ export interface GlassdoorData {
   reviewCount: number | null;
   ceoName?: string;
   interviewQuotes?: string[];
+  blindRating?: number | null;
+  blindPosts?: string[];
 }
 
 export interface LevelsData {
@@ -77,6 +79,7 @@ export interface BLSData {
   p90: number | null;
   yearOverYearChange: string;
   locationData?: string;
+  hibData?: { median: number; sampleSize: number; low: number; high: number };
 }
 
 export interface SECData {
