@@ -179,19 +179,33 @@ export default function AnalyzePage() {
 
       const role = jobPosting?.title || '';
 
+      // Extract disambiguating context from the job posting so scrapers don't
+      // confuse "Meridian AI startup" with "Meridian Idaho" or "Meridian IT".
+      const jobFullText = (jobPosting?.fullText || request.jobText || '').toLowerCase();
+      const ctxSignals: string[] = [];
+      if (/\bai\b|artificial intelligence|machine learning|llm|gpt|generative/i.test(jobFullText)) ctxSignals.push('AI');
+      if (/startup|series [a-e]|seed round|venture.backed|vc.backed|early.stage/i.test(jobFullText)) ctxSignals.push('startup');
+      if (/private equity|private markets|deal management|portfolio company/i.test(jobFullText)) ctxSignals.push('private equity');
+      if (/fintech|financial technology/i.test(jobFullText)) ctxSignals.push('fintech');
+      if (/healthcare|health.?tech|medical/i.test(jobFullText)) ctxSignals.push('healthcare');
+      if (/saas|software.as.a.service|cloud.based|enterprise software/i.test(jobFullText)) ctxSignals.push('SaaS');
+      if (/ecommerce|e.commerce|marketplace/i.test(jobFullText)) ctxSignals.push('ecommerce');
+      if (/cybersecurity|security platform|infosec/i.test(jobFullText)) ctxSignals.push('cybersecurity');
+      const companyContext = ctxSignals.slice(0, 3).join(' ');
+
       // ── 2. Fire all scraping calls in PARALLEL ────────────────────────────
       const [newsRes, redditRes, glassdoorRes, levelsRes, blsRes, secRes] = await Promise.all([
 
         fetchStep<{ results: GoogleNewsResult[]; sources: ScrapedSource[] }>(
-          'news', '/api/scrape/news', { companyName: request.companyName, role }, signal,
+          'news', '/api/scrape/news', { companyName: request.companyName, role, companyContext }, signal,
         ),
 
         fetchStep<{ threads: RedditThread[]; sources: ScrapedSource[] }>(
-          'reddit', '/api/scrape/reddit', { companyName: request.companyName, role }, signal,
+          'reddit', '/api/scrape/reddit', { companyName: request.companyName, role, companyContext }, signal,
         ),
 
         fetchStep<{ data: GlassdoorData; sources: ScrapedSource[] }>(
-          'glassdoor', '/api/scrape/glassdoor', { companyName: request.companyName, role }, signal,
+          'glassdoor', '/api/scrape/glassdoor', { companyName: request.companyName, role, companyContext }, signal,
         ),
 
         fetchStep<{ data: LevelsData; sources: ScrapedSource[] }>(
@@ -203,7 +217,7 @@ export default function AnalyzePage() {
         ),
 
         fetchStep<{ data: SECData; sources: ScrapedSource[] }>(
-          'sec', '/api/scrape/sec', { companyName: request.companyName }, signal,
+          'sec', '/api/scrape/sec', { companyName: request.companyName, companyContext }, signal,
         ),
       ]);
 

@@ -81,26 +81,30 @@ async function fetchHtml(url: string, extraHeaders: Record<string, string> = {})
 // ── GOOGLE NEWS ──────────────────────────────────────────────────────────────
 export async function scrapeGoogleNews(
   companyName: string,
-  role?: string
+  role?: string,
+  companyContext?: string
 ): Promise<{ results: GoogleNewsResult[]; sources: ScrapedSource[] }> {
   const results: GoogleNewsResult[] = [];
   const sources: ScrapedSource[] = [];
   const seenUrls = new Set<string>();
 
-  // 6 targeted, company-specific queries — quality over quantity.
-  // Each query must return articles that are ABOUT the company, not just mentioning it in passing.
+  // Build disambiguated company query — for generic names like "Meridian", appending context
+  // (e.g. "AI startup") prevents matching Meridian Idaho, Meridian IT, Le Meridian hotel, etc.
+  const ctxSuffix = companyContext ? ` ${companyContext}` : '';
+  const companyQ = `"${companyName}"${ctxSuffix}`;
+
   const queries = [
-    `"${companyName}" layoffs OR "job cuts" OR "reduction in force" OR downsizing OR restructuring`,
-    `"${companyName}" acquisition OR merger OR IPO OR "going public" OR bankruptcy OR valuation`,
-    `"${companyName}" earnings OR revenue OR profit OR "quarterly results" OR "financial results"`,
-    `"${companyName}" CEO OR CFO OR CTO OR "executive departure" OR resignation OR leadership`,
-    `"${companyName}" lawsuit OR investigation OR fine OR regulatory OR fraud OR NLRB`,
-    `"${companyName}" employees OR culture OR "work environment" OR glassdoor OR "employee reviews"`,
+    `${companyQ} layoffs OR "job cuts" OR "reduction in force" OR downsizing OR restructuring`,
+    `${companyQ} acquisition OR merger OR IPO OR "going public" OR bankruptcy OR valuation OR funding OR "Series"`,
+    `${companyQ} earnings OR revenue OR profit OR "quarterly results" OR "financial results"`,
+    `${companyQ} CEO OR CFO OR CTO OR "executive departure" OR resignation OR leadership`,
+    `${companyQ} lawsuit OR investigation OR fine OR regulatory OR fraud OR NLRB`,
+    `${companyQ} employees OR culture OR "work environment" OR glassdoor OR "employee reviews"`,
   ];
 
   // Only add role query when role is a real job title (not a company tagline)
   if (role && role.length > 3 && role.length < 60 && !/connecting|talent|opportunity|markets/i.test(role)) {
-    queries.push(`"${companyName}" "${role}" salary OR compensation OR hiring`);
+    queries.push(`${companyQ} "${role}" salary OR compensation OR hiring`);
   }
 
   // Keyword that must appear in title to keep the article — prevents off-topic noise.
@@ -201,7 +205,8 @@ async function fetchRedditSearch(
 
 export async function scrapeReddit(
   companyName: string,
-  role: string
+  role: string,
+  companyContext?: string,
 ): Promise<{ threads: RedditThread[]; sources: ScrapedSource[] }> {
   const threads: RedditThread[] = [];
   const sources: ScrapedSource[] = [];
@@ -214,16 +219,18 @@ export async function scrapeReddit(
     sources.push({ url: p.url, type: 'reddit', title: p.title.slice(0, 120), timestamp: new Date().toISOString() });
   };
 
-  // Primary: Serper.dev — run all queries IN PARALLEL (was sequential, caused timeouts)
-  // Use site: AND keyword-only variants so we find threads even when Google site: index is sparse
+  // Build disambiguated query — prevents "Meridian" from matching Meridian Idaho, Meridian IT, etc.
+  const ctx = companyContext ? ` ${companyContext}` : '';
+  const companyQ = `"${companyName}"${ctx}`;
+
   const serpQueries = [
-    `site:reddit.com "${companyName}" employees culture work experience`,
-    `site:reddit.com "${companyName}" salary compensation pay`,
-    `site:reddit.com "${companyName}" interview hiring layoffs`,
-    `"${companyName}" reddit employees culture review`,          // no site: — catches more results
+    `site:reddit.com ${companyQ} employees culture work experience`,
+    `site:reddit.com ${companyQ} salary compensation pay`,
+    `site:reddit.com ${companyQ} interview hiring layoffs`,
+    `${companyQ} reddit employees culture review`,               // no site: — catches more results
     role && role.length < 60
-      ? `site:reddit.com "${companyName}" "${role}"`
-      : `"${companyName}" reddit salary career`,
+      ? `site:reddit.com ${companyQ} "${role}"`
+      : `${companyQ} reddit salary career`,
   ];
 
   // All Serper queries fire at once
@@ -415,7 +422,8 @@ function parseGlassdoorHtml(html: string, data: GlassdoorData, url: string, sour
 
 export async function scrapeGlassdoor(
   companyName: string,
-  role: string
+  role: string,
+  companyContext?: string,
 ): Promise<{ data: GlassdoorData; sources: ScrapedSource[] }> {
   const sources: ScrapedSource[] = [];
   const data: GlassdoorData = {
@@ -424,12 +432,12 @@ export async function scrapeGlassdoor(
     interviewDifficulty: null, interviewExperience: null, reviewCount: null,
   };
 
-  // Strategy 1: Serper targeted at Glassdoor — Google's cached snippets contain
-  // rating numbers and partial review text that Glassdoor's own bot-detection hides.
-  // Two queries: one broad, one site: restricted for review content.
+  const ctx = companyContext ? ` ${companyContext}` : '';
+  const companyQ = `"${companyName}"${ctx}`;
+
   const glassdoorSearches = [
-    `"${companyName}" glassdoor reviews rating culture employees`,
-    `site:glassdoor.com "${companyName}" reviews`,
+    `${companyQ} glassdoor reviews rating culture employees`,
+    `site:glassdoor.com ${companyQ} reviews`,
   ];
   let glassdoorDirectUrl: string | null = null;
 
@@ -1066,7 +1074,8 @@ async function scrapeBlind(
 
 // ── SEC EDGAR ────────────────────────────────────────────────────────────────
 export async function scrapeSEC(
-  companyName: string
+  companyName: string,
+  companyContext?: string,
 ): Promise<{ data: SECData; sources: ScrapedSource[] }> {
   const sources: ScrapedSource[] = [];
   const data: SECData = {
@@ -1154,8 +1163,12 @@ export async function scrapeSEC(
     } catch { /* not a public company or no filings */ }
   }
 
+  // All Google News + Serper queries use disambiguated company query
+  const secCtx = companyContext ? ` ${companyContext}` : '';
+  const secCompanyQ = `"${companyName}"${secCtx}`;
+
   // Financial signals via Google News RSS
-  const finQuery = `"${companyName}" revenue earnings profit financial results 2024 2025`;
+  const finQuery = `${secCompanyQ} revenue earnings profit financial results 2024 2025`;
   const finRss = await fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(finQuery)}&hl=en-US&gl=US&ceid=US:en`);
   if (finRss && finRss.length > 500) {
     const $fin = cheerio.load(finRss, { xmlMode: true });
@@ -1170,7 +1183,7 @@ export async function scrapeSEC(
   }
 
   // Funding and investment signals via Google News RSS
-  const fundQuery = `"${companyName}" funding raised investment series valuation`;
+  const fundQuery = `${secCompanyQ} funding raised investment series valuation`;
   const fundRss = await fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(fundQuery)}&hl=en-US&gl=US&ceid=US:en`);
   if (fundRss && fundRss.length > 500) {
     const $fund = cheerio.load(fundRss, { xmlMode: true });
@@ -1201,11 +1214,9 @@ export async function scrapeSEC(
   sources.push({ url: edgarUrl, type: 'sec', title: `SEC EDGAR - ${companyName} filings`, timestamp: new Date().toISOString() });
 
   // WARN Act — federally mandated mass layoff notices (50+ employees, 60-day advance notice)
-  // Companies must file with state agencies. Data is completely public, scraped from aggregators.
-  // This is a killer signal: formal WARN filing = verified, documented layoff, not rumor.
   const warnQueries = [
-    `"${companyName}" WARN Act layoff notice site:warn.workforcegps.org OR site:edd.ca.gov OR site:labor.ny.gov`,
-    `"${companyName}" WARN Act "mass layoff" OR "plant closing" notice`,
+    `${secCompanyQ} WARN Act layoff notice site:warn.workforcegps.org OR site:edd.ca.gov OR site:labor.ny.gov`,
+    `${secCompanyQ} WARN Act "mass layoff" OR "plant closing" notice`,
   ];
   const [warnRes1, warnRes2] = await Promise.all(warnQueries.map(q => searchWeb(q, 5)));
   for (const r of [...warnRes1, ...warnRes2]) {
@@ -1218,8 +1229,8 @@ export async function scrapeSEC(
       sources.push({ url: r.link, type: 'sec', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
     }
   }
-  // Also check layoffs.fyi — crowd-sourced but very comprehensive for tech layoffs
-  const layoffsFyiRes = await searchWeb(`site:layoffs.fyi "${companyName}" layoff`, 4);
+  // layoffs.fyi — crowd-sourced, comprehensive for tech layoffs
+  const layoffsFyiRes = await searchWeb(`site:layoffs.fyi ${secCompanyQ} layoff`, 4);
   for (const r of layoffsFyiRes) {
     if (!r.link.includes('layoffs.fyi')) continue;
     const text = `${r.title} ${r.snippet}`;
@@ -1229,26 +1240,22 @@ export async function scrapeSEC(
     sources.push({ url: r.link, type: 'sec', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
   }
 
-  // Crunchbase — funding rounds, investors, headcount, founding year
-  // Public data is indexed by Google so Serper gives us the key facts
-  const cbResults = await searchWeb(`site:crunchbase.com "${companyName}" funding investors`, 5);
+  // Crunchbase — use context to disambiguate (e.g. "Meridian AI" not "Meridian Apps")
+  const cbResults = await searchWeb(`site:crunchbase.com ${secCompanyQ} funding investors`, 5);
   for (const r of cbResults) {
     if (!r.link.includes('crunchbase.com')) continue;
     const text = `${r.title} ${r.snippet}`;
-    // Funding total
     const fundM = text.match(/\$[\d.]+\s*(?:B|M|billion|million)\s*(?:total funding|raised|in funding)/i);
     if (fundM) data.fundingSignals.push(`Crunchbase: ${fundM[0].trim()}`);
-    // Headcount
     const empM = text.match(/([\d,]+(?:-[\d,]+)?)\s*employees?/i);
     if (empM) data.financialSignals.push(`Crunchbase headcount: ${empM[1]} employees`);
-    // Investors
     const invM = text.match(/(?:backed by|investors?(?:\s+include)?)[:\s]+([A-Z][^.]+(?:\.[^.]+){0,2})/i);
     if (invM) data.fundingSignals.push(`Investors: ${invM[1].trim().slice(0, 120)}`);
     sources.push({ url: r.link, type: 'crunchbase', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
   }
 
-  // Pitchbook via Serper (paywalled but snippets have summary data)
-  const pbResults = await searchWeb(`"${companyName}" site:pitchbook.com OR "pitchbook" "${companyName}" funding employees`, 4);
+  // Pitchbook via Serper
+  const pbResults = await searchWeb(`${secCompanyQ} site:pitchbook.com OR "pitchbook" ${secCompanyQ} funding employees`, 4);
   for (const r of pbResults) {
     const text = `${r.title} ${r.snippet}`;
     const fundM = text.match(/\$[\d.]+\s*(?:B|M|billion|million)/i);
@@ -1258,11 +1265,10 @@ export async function scrapeSEC(
     }
   }
 
-  // LinkedIn company page via Serper — Google indexes employee count, specialties, recent activity
-  // Direct scrape is blocked but snippet data is reliable for headcount signals
+  // LinkedIn company page via Serper
   const [liCompanyRes, liActivityRes] = await Promise.all([
-    searchWeb(`site:linkedin.com/company "${companyName}" employees`, 4),
-    searchWeb(`"${companyName}" linkedin hiring layoffs headcount 2024 2025`, 4),
+    searchWeb(`site:linkedin.com/company ${secCompanyQ} employees`, 4),
+    searchWeb(`${secCompanyQ} linkedin hiring layoffs headcount 2024 2025`, 4),
   ]);
   for (const r of [...liCompanyRes, ...liActivityRes]) {
     const text = `${r.title} ${r.snippet}`;

@@ -5,9 +5,9 @@ export const runtime = 'nodejs';
 export const maxDuration = 25;
 
 export async function POST(req: NextRequest) {
-  const { companyName, role } = await req.json();
+  const { companyName, role, companyContext } = await req.json();
   if (!companyName) return NextResponse.json({ error: 'companyName required' }, { status: 400 });
 
-  const result = await scrapeReddit(companyName, role || '');
+  const result = await scrapeReddit(companyName, role || '', companyContext);
   return NextResponse.json(result);
 }

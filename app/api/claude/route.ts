@@ -134,8 +134,18 @@ Employee cons (verbatim themes): ${scrapedData.glassdoor?.cons?.slice(0, 6).join
 Interview difficulty: ${scrapedData.glassdoor?.interviewDifficulty ?? '?'}/5 | Interview experience: ${scrapedData.glassdoor?.interviewExperience ? `${scrapedData.glassdoor.interviewExperience.positive}% positive` : '?'}
 Interview quotes: ${scrapedData.glassdoor?.interviewQuotes?.slice(0, 2).join(' | ') || 'none'}
 
-NEWS (${scrapedData.news?.length ?? 0} articles — most recent first):
-${scrapedData.news?.slice(0, 12).map(n => `[${n.publishedAt?.slice(0, 10)}] ${n.title} — ${n.summary?.slice(0, 80)} [URL:${n.url}]`).join('\n') || 'none found'}
+NEWS (${scrapedData.news?.length ?? 0} articles — company-relevant first):
+${(scrapedData.news ?? [])
+  .slice()
+  .sort((a, b) => {
+    // Boost articles where company name appears in title
+    const aMatch = a.title.toLowerCase().includes(request.companyName.toLowerCase()) ? 1 : 0;
+    const bMatch = b.title.toLowerCase().includes(request.companyName.toLowerCase()) ? 1 : 0;
+    return bMatch - aMatch;
+  })
+  .slice(0, 20)
+  .map(n => `[${n.publishedAt?.slice(0, 10)}] ${n.title} — ${n.summary?.slice(0, 80)} [URL:${n.url}]`)
+  .join('\n') || 'none found'}
 
 REDDIT EMPLOYEE DISCUSSIONS (${scrapedData.reddit?.length ?? 0} threads — unfiltered employee voice):
 ${scrapedData.reddit?.slice(0, 10).map(t => {
