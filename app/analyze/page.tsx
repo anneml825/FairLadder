@@ -41,10 +41,10 @@ const INITIAL_STEPS: Step[] = [
   { id: 'job',      label: 'Finding & analyzing job posting',          icon: '📄', status: 'pending', count: 0 },
   { id: 'news',     label: 'Scanning company news & press releases',   icon: '📰', status: 'pending', count: 0 },
   { id: 'reddit',   label: 'Reading Reddit employee threads',          icon: '🗣️', status: 'pending', count: 0 },
-  { id: 'glassdoor',label: 'Checking Glassdoor, Comparably & Indeed',  icon: '⭐', status: 'pending', count: 0 },
-  { id: 'levels',   label: 'Researching salary benchmarks',            icon: '💰', status: 'pending', count: 0 },
-  { id: 'bls',      label: 'Pulling BLS, Salary.com & Payscale data',  icon: '📊', status: 'pending', count: 0 },
-  { id: 'sec',      label: 'Searching SEC filings (8-K, 10-K, 10-Q)',  icon: '📋', status: 'pending', count: 0 },
+  { id: 'glassdoor',label: 'Checking Glassdoor, Comparably, Indeed & Blind', icon: '⭐', status: 'pending', count: 0 },
+  { id: 'levels',   label: 'Researching salary benchmarks',                  icon: '💰', status: 'pending', count: 0 },
+  { id: 'bls',      label: 'Pulling BLS, Salary.com, Payscale & H-1B data', icon: '📊', status: 'pending', count: 0 },
+  { id: 'sec',      label: 'SEC, WARN Act, Crunchbase & LinkedIn signals',   icon: '📋', status: 'pending', count: 0 },
   { id: 'claude',   label: 'Running intelligence analysis',            icon: '🤖', status: 'pending', count: 0 },
 ];
 

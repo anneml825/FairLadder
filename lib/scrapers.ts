@@ -867,21 +867,22 @@ export async function scrapeBLS(
     `"${role}" salary comparably.com OR ziprecruiter.com OR builtin.com`,
   ];
 
+  // Run all salary queries in parallel — no early break, we want sources from all of them
   const allSalarySnippets: string[] = [];
-  for (const q of salarySearches) {
-    const results = await searchWeb(q, 8);
+  const salaryResultSets = await Promise.all(salarySearches.map(q => searchWeb(q, 6)));
+  for (const results of salaryResultSets) {
     if (results.length > 0) {
       allSalarySnippets.push(...results.map(r => `${r.title} ${r.snippet}`));
-      for (const r of results.slice(0, 4)) {
+      for (const r of results.slice(0, 3)) {
         sources.push({ url: r.link, type: 'bls', title: r.title.slice(0, 80), timestamp: new Date().toISOString() });
       }
     }
-    if (data.medianSalary) break; // stop once we have a figure
-    const nums = extractSalariesFromText(allSalarySnippets.join(' '));
-    if (nums.length > 0) {
-      const sorted = nums.sort((a, b) => a - b);
-      data.medianSalary = sorted[Math.floor(sorted.length / 2)]; // use median of found figures
-    }
+  }
+  // Extract median from all collected salary figures
+  const allNums = extractSalariesFromText(allSalarySnippets.join(' '));
+  if (allNums.length > 0) {
+    const sorted = allNums.sort((a, b) => a - b);
+    data.medianSalary = sorted[Math.floor(sorted.length / 2)];
   }
 
   // Location premium — separate Serper search for location-specific figure
