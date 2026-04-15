@@ -1224,17 +1224,27 @@ export async function scrapeSEC(
 
   // WARN Act — federally mandated mass layoff notices (50+ employees, 60-day advance notice)
   const warnQueries = [
-    `${secCompanyQ} WARN Act layoff notice site:warn.workforcegps.org OR site:edd.ca.gov OR site:labor.ny.gov`,
-    `${secCompanyQ} WARN Act "mass layoff" OR "plant closing" notice`,
+    // Quote the company name to force exact-match — prevents matching partial names on listing pages
+    `"${companyName}" WARN Act layoff notice site:warn.workforcegps.org OR site:edd.ca.gov OR site:labor.ny.gov`,
+    `"${companyName}" WARN Act "mass layoff" OR "plant closing" filing`,
   ];
   const [warnRes1, warnRes2] = await Promise.all(warnQueries.map(q => searchWeb(q, 5)));
   for (const r of [...warnRes1, ...warnRes2]) {
     const text = `${r.title} ${r.snippet}`;
     if (/warn act|mass layoff|plant closing|workforce reduction/i.test(text)) {
       const dateM = text.match(/\b(20\d\d)\b/);
-      const countM = text.match(/(\d[\d,]+)\s*(?:employees?|workers?|jobs?)/i);
-      const signal = `WARN Act filing: ${companyName}${countM ? ` — ${countM[0]}` : ''}${dateM ? ` (${dateM[1]})` : ''}`;
-      if (!data.layoffSignals.includes(signal)) data.layoffSignals.push(signal);
+      // Only extract a worker count if it appears within 80 characters of the company name
+      // in the snippet — prevents picking up aggregate page stats unrelated to this company
+      let verifiedCount: string | null = null;
+      const nameIdx = text.toLowerCase().indexOf(companyName.toLowerCase());
+      if (nameIdx !== -1) {
+        const nearby = text.slice(Math.max(0, nameIdx - 40), nameIdx + companyName.length + 80);
+        const nearbyCount = nearby.match(/(\d[\d,]+)\s*(?:employees?|workers?|jobs?)/i);
+        if (nearbyCount) verifiedCount = nearbyCount[0];
+      }
+      // Embed the source URL so Claude can use it as a clickable sourceUrl in the timeline
+      const signal = `WARN Act filing: ${companyName}${verifiedCount ? ` — ${verifiedCount}` : ' (filing found — click source to verify count)'}${dateM ? ` (${dateM[1]})` : ''} [URL:${r.link}] [SOURCE:${r.title.slice(0, 60)}]`;
+      if (!data.layoffSignals.some(s => s.includes(r.link))) data.layoffSignals.push(signal);
       sources.push({ url: r.link, type: 'sec', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
     }
   }
@@ -1245,7 +1255,7 @@ export async function scrapeSEC(
     const text = `${r.title} ${r.snippet}`;
     const countM = text.match(/(\d[\d,]+)\s*(?:employees?|workers?|jobs?|people)/i);
     const dateM = text.match(/\b(20\d\d)\b/);
-    data.layoffSignals.push(`Layoffs.fyi: ${companyName}${countM ? ` — ${countM[0]} affected` : ''}${dateM ? ` (${dateM[1]})` : ''}`);
+    data.layoffSignals.push(`Layoffs.fyi: ${companyName}${countM ? ` — ${countM[0]} affected` : ''}${dateM ? ` (${dateM[1]})` : ''} [URL:${r.link}] [SOURCE:layoffs.fyi]`);
     sources.push({ url: r.link, type: 'sec', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
   }
 

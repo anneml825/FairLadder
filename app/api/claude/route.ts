@@ -207,7 +207,8 @@ ${scrapedData.reddit?.slice(0, 20).map(t => {
 }).join('\n') || 'none found'}
 
 SEC / FINANCIAL INTELLIGENCE:
-Layoff signals: ${scrapedData.sec?.layoffSignals?.join('; ') || 'none'}
+Layoff signals (format: "signal [URL:url] [SOURCE:name]" — use the URL as sourceUrl and SOURCE as source in timeline events):
+${scrapedData.sec?.layoffSignals?.join('\n') || 'none'}
 Executive departures: ${scrapedData.sec?.executiveDepartures?.join('; ') || 'none'}
 Recent filings: ${scrapedData.sec?.filings?.slice(0, 8).map(f => `${f.date}: ${f.description}`).join('; ') || 'none'}
 Financial signals: ${scrapedData.sec?.financialSignals?.join(' | ') || 'none'}
