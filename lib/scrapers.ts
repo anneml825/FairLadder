@@ -1279,6 +1279,19 @@ export async function scrapeSEC(
     }
   }
 
+  // General Google search — top 10 results for company name
+  // Catches: company website, Wikipedia, general press, Crunchbase overview, etc.
+  const generalResults = await searchWeb(secCompanyQ, 10);
+  for (const r of generalResults) {
+    const text = `${r.title} ${r.snippet}`;
+    // Extract any employee/funding signals not already captured
+    const empM = text.match(/([\d,]+(?:-[\d,]+)?)\s*employees?/i);
+    if (empM) data.financialSignals.push(`General: ~${empM[1]} employees`);
+    const fundM = text.match(/\$[\d.]+\s*(?:B|M|billion|million)\s*(?:raised|funding|valuation|series)/i);
+    if (fundM) data.fundingSignals.push(`General search: ${fundM[0].trim()}`);
+    sources.push({ url: r.link, type: 'sec', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
+  }
+
   return { data, sources };
 }
 
