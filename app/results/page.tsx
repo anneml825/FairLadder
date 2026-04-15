@@ -239,7 +239,6 @@ export default function ResultsPage() {
         {activeTab === 'overview' && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <RadarChart scores={result.radarScores} />
-            <BellCurve data={result.salaryIntelligence} />
             <div className="lg:col-span-2">
               <Timeline events={result.timeline || []} />
             </div>
@@ -368,6 +367,9 @@ export default function ResultsPage() {
         {/* SALARY TAB */}
         {activeTab === 'salary' && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="lg:col-span-2">
+              <BellCurve data={result.salaryIntelligence} />
+            </div>
             <div className="glass rounded-2xl p-6 border border-[#1e2736]">
               <h3 className="text-sm font-semibold text-white uppercase tracking-wide mb-4">Salary Analysis</h3>
               <BulletList bullets={normalizeBullets(result.salaryAnalysis)} />
