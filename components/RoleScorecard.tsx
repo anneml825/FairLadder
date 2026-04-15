@@ -1,6 +1,6 @@
 'use client';
 
-import { RoleScorecardRow } from '@/lib/types';
+import { RoleScorecardRow, IntelligenceBullet } from '@/lib/types';
 
 function renderMd(text: string) {
   if (!text) return null;
@@ -10,9 +10,15 @@ function renderMd(text: string) {
   );
 }
 
+function normalizeBullets(raw: IntelligenceBullet[] | string | undefined): IntelligenceBullet[] {
+  if (!raw) return [];
+  if (typeof raw === 'string') return raw.split(/\n+/).filter(Boolean).map(t => ({ text: t.replace(/^•\s*/, '').trim() }));
+  return raw;
+}
+
 interface Props {
   rows: RoleScorecardRow[];
-  roleIntelligence: string;
+  roleIntelligence: IntelligenceBullet[] | string;
 }
 
 const STATUS_CONFIG = {
@@ -48,11 +54,28 @@ export default function RoleScorecard({ rows, roleIntelligence }: Props) {
         })}
       </div>
 
-      {/* Role intelligence text */}
-      {roleIntelligence && (
+      {/* Role intelligence bullets */}
+      {roleIntelligence && normalizeBullets(roleIntelligence).length > 0 && (
         <div className="border-t border-[#1e2736] pt-4">
-          <div className="text-xs text-[#8892a4] mb-2 uppercase tracking-wide font-medium">Analysis</div>
-          <p className="text-sm text-[#c8d0e0] leading-relaxed whitespace-pre-wrap">{renderMd(roleIntelligence)}</p>
+          <div className="text-xs text-[#8892a4] mb-3 uppercase tracking-wide font-medium">Analysis</div>
+          <ul className="space-y-3">
+            {normalizeBullets(roleIntelligence).map((b, i) => (
+              <li key={i} className="flex gap-2.5 items-start">
+                <span className="text-indigo-400 mt-0.5 shrink-0 select-none">•</span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-[#c8d0e0] leading-relaxed">{renderMd(b.text)}</p>
+                  {b.sourceUrl ? (
+                    <a href={b.sourceUrl} target="_blank" rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 mt-1 text-[10px] text-indigo-400/60 hover:text-indigo-300 transition-colors underline underline-offset-2">
+                      ↗ {b.sourceName || 'Source'}
+                    </a>
+                  ) : b.sourceName ? (
+                    <span className="inline-block mt-1 text-[10px] text-[#4a5568]">{b.sourceName}</span>
+                  ) : null}
+                </div>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
     </div>

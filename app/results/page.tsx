@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { AnalysisResult } from '@/lib/types';
+import { AnalysisResult, IntelligenceBullet } from '@/lib/types';
 import RadarChart from '@/components/RadarChart';
 import BellCurve from '@/components/BellCurve';
 import Timeline from '@/components/Timeline';
@@ -18,6 +18,43 @@ function renderMd(text: string) {
   const parts = text.split(/\*\*(.+?)\*\*/g);
   return parts.map((part, i) =>
     i % 2 === 1 ? <strong key={i} className="text-white font-semibold">{part}</strong> : part
+  );
+}
+
+// Normalise: Claude may return bullets as an array or (legacy) a plain string
+function normalizeBullets(raw: IntelligenceBullet[] | string | undefined): IntelligenceBullet[] {
+  if (!raw) return [];
+  if (typeof raw === 'string') {
+    return raw.split(/\n+/).filter(Boolean).map(t => ({ text: t.replace(/^•\s*/, '').trim() }));
+  }
+  return raw;
+}
+
+function BulletList({ bullets }: { bullets: IntelligenceBullet[] }) {
+  if (!bullets.length) return <p className="text-sm text-[#4a5568] italic">No data found.</p>;
+  return (
+    <ul className="space-y-3">
+      {bullets.map((b, i) => (
+        <li key={i} className="flex gap-2.5 items-start">
+          <span className="text-indigo-400 mt-0.5 shrink-0 select-none">•</span>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm text-[#c8d0e0] leading-relaxed">{renderMd(b.text)}</p>
+            {b.sourceUrl ? (
+              <a
+                href={b.sourceUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 mt-1 text-[10px] text-indigo-400/60 hover:text-indigo-300 transition-colors underline underline-offset-2"
+              >
+                ↗ {b.sourceName || 'Source'}
+              </a>
+            ) : b.sourceName ? (
+              <span className="inline-block mt-1 text-[10px] text-[#4a5568]">{b.sourceName}</span>
+            ) : null}
+          </div>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -216,19 +253,17 @@ export default function ResultsPage() {
 
             <div className="glass rounded-2xl p-6 border border-[#1e2736]">
               <h3 className="text-sm font-semibold text-white uppercase tracking-wide mb-4">Company Intelligence</h3>
-              <div className="prose prose-sm max-w-none">
-                <p className="text-sm text-[#c8d0e0] leading-relaxed whitespace-pre-wrap">{renderMd(result.companyIntelligence)}</p>
-              </div>
+              <BulletList bullets={normalizeBullets(result.companyIntelligence)} />
 
-              {/* Data gaps — sources that returned no useful data */}
+              {/* Data gaps */}
               {result.dataGaps && result.dataGaps.length > 0 && (
-                <div className="mt-3 flex flex-wrap gap-1.5">
+                <div className="mt-4 pt-3 border-t border-[#1e2736] flex flex-wrap gap-1.5 items-center">
+                  <span className="text-[10px] text-[#4a5568] uppercase tracking-wide mr-1">Not found:</span>
                   {result.dataGaps.map((gap, i) => (
-                    <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-[#1a2033] text-[#6b7a94] border border-[#1e2736]">
+                    <span key={i} className="text-[10px] px-2 py-0.5 rounded-full bg-[#1a2033] text-[#6b7a94] border border-[#1e2736]">
                       {gap}
                     </span>
                   ))}
-                  <span className="text-xs px-2 py-0.5 text-[#4b5568] italic">data not found</span>
                 </div>
               )}
 
@@ -342,7 +377,7 @@ export default function ResultsPage() {
 
             <div className="glass rounded-2xl p-6 border border-[#1e2736]">
               <h3 className="text-sm font-semibold text-white uppercase tracking-wide mb-4">Salary Analysis</h3>
-              <p className="text-sm text-[#c8d0e0] leading-relaxed whitespace-pre-wrap">{renderMd(result.salaryAnalysis)}</p>
+              <BulletList bullets={normalizeBullets(result.salaryAnalysis)} />
             </div>
 
             {/* BLS data — only show when we actually have salary figures */}

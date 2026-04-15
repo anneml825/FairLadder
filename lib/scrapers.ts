@@ -890,8 +890,12 @@ export async function scrapeBLS(
   for (const results of salaryResultSets) {
     if (results.length > 0) {
       allSalarySnippets.push(...results.map(r => `${r.title} ${r.snippet}`));
-      for (const r of results.slice(0, 3)) {
-        sources.push({ url: r.link, type: 'bls', title: r.title.slice(0, 80), timestamp: new Date().toISOString() });
+      // Only save results that actually contain salary figures — skip generic job description pages
+      for (const r of results) {
+        const snippet = `${r.title} ${r.snippet}`;
+        if (/\$[\d,]+|\d{2,3},\d{3}|per.?year|annual.?salary|average.?salary|median.?salary|median.?wage/i.test(snippet)) {
+          sources.push({ url: r.link, type: 'bls', title: r.title.slice(0, 80), timestamp: new Date().toISOString() });
+        }
       }
     }
   }

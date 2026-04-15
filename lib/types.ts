@@ -182,6 +182,12 @@ export interface NegotiationPlaybook {
   walkAwayRecommendation: string;
 }
 
+export interface IntelligenceBullet {
+  text: string;         // markdown-formatted bullet text (no leading •)
+  sourceUrl?: string;   // direct link to the source supporting this bullet
+  sourceName?: string;  // short display name, e.g. "Glassdoor", "SEC 8-K", "WARN Act"
+}
+
 export interface AnalysisResult {
   id: string;
   companyName: string;
@@ -204,9 +210,9 @@ export interface AnalysisResult {
   sentimentWords: SentimentWord[];
   negotiationPlaybook?: NegotiationPlaybook;
 
-  companyIntelligence: string;
-  roleIntelligence: string;
-  salaryAnalysis: string;
+  companyIntelligence: IntelligenceBullet[] | string;
+  roleIntelligence: IntelligenceBullet[] | string;
+  salaryAnalysis: IntelligenceBullet[] | string;
   offerAnalysis?: string;
   dataGaps?: string[];
   bottomLine: string;
