@@ -224,7 +224,7 @@ Location salary: ${scrapedData.bls?.locationData || 'not found'}
 Levels.fyi: ${scrapedData.levels?.targetRoleSalaries?.slice(0, 5).map(s => `${s.company} $${s.base?.toLocaleString()} base`).join(', ') || 'none found'}
 Comparable cos: ${scrapedData.levels?.comparableSalaries?.slice(0, 6).map(s => `${s.company} $${s.base?.toLocaleString()}`).join(', ') || 'none'}
 
-OFFER: ${request.offerText || 'not provided'}
+OFFER: ${request.offerText || 'NOT PROVIDED — negotiationPlaybook and offerAnalysis MUST be null. Do not generate them.'}
 
 Return ONLY valid JSON, no markdown fences, no text outside the JSON object:
 
@@ -315,6 +315,12 @@ Return ONLY valid JSON, no markdown fences, no text outside the JSON object:
         }
 
         const targetSalary = ((request.desiredSalaryMin ?? 0) + (request.desiredSalaryMax ?? 0)) / 2;
+
+        // Hard guardrail: never show negotiation playbook without an actual offer letter
+        if (!request.offerText) {
+          parsed.negotiationPlaybook = null;
+          parsed.offerAnalysis = null;
+        }
 
         const result = {
           id: Math.random().toString(36).slice(2, 10),
