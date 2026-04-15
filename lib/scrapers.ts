@@ -1109,6 +1109,9 @@ export async function scrapeSEC(
     Referer: 'https://efts.sec.gov/',
   });
 
+  // Track real 8-K filings (with accession numbers) for content fetching
+  const eightKsToFetch: Array<{ entityId: string; accNo: string; date: string; filingUrl: string }> = [];
+
   if (html) {
     try {
       const json = JSON.parse(html);
@@ -1119,8 +1122,9 @@ export async function scrapeSEC(
         const filingDate = src?.period_of_report || src?.file_date || '';
         const formType = src?.form_type || '8-K';
         const accNo = src?.accession_no?.replace(/-/g, '') || '';
+        const entityId = src?.entity_id || '';
         const filingUrl = accNo
-          ? `https://www.sec.gov/Archives/edgar/data/${src?.entity_id}/${accNo}/${accNo}-index.htm`
+          ? `https://www.sec.gov/Archives/edgar/data/${entityId}/${accNo}/${accNo}-index.htm`
           : `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=${encodeURIComponent(companyName)}&type=8-K`;
 
         const filingTitle = src?.file_date
@@ -1148,8 +1152,71 @@ export async function scrapeSEC(
           title: filingTitle,
           timestamp: filingDate || new Date().toISOString(),
         });
+
+        // Queue real 8-K filings for content fetching (limit to 2 most recent)
+        if (accNo && entityId && eightKsToFetch.length < 2) {
+          eightKsToFetch.push({ entityId, accNo, date: filingDate, filingUrl });
+        }
       }
     } catch { /* JSON parse error */ }
+  }
+
+  // Fetch actual 8-K document text for the 2 most recent filings with accession numbers.
+  // The EDGAR index page lists all documents in the filing; we grab the primary .htm doc.
+  if (eightKsToFetch.length > 0) {
+    await Promise.all(eightKsToFetch.map(async ({ entityId, accNo, date, filingUrl }) => {
+      try {
+        const indexHtml = await fetchHtml(filingUrl);
+        if (!indexHtml) return;
+
+        // Find the primary document — first .htm that isn't the index itself
+        const docLinkMatch = indexHtml.match(
+          /href="(\/Archives\/edgar\/data\/[^"]+\.htm)"/gi,
+        );
+        if (!docLinkMatch) return;
+
+        let primaryDocUrl = '';
+        for (const m of docLinkMatch) {
+          const href = m.replace(/^href="/i, '').replace(/"$/, '');
+          if (!href.endsWith('-index.htm') && !href.includes('R1.htm')) {
+            primaryDocUrl = `https://www.sec.gov${href}`;
+            break;
+          }
+        }
+        if (!primaryDocUrl) return;
+
+        const docHtml = await fetchHtml(primaryDocUrl);
+        if (!docHtml) return;
+
+        // Strip HTML tags cleanly
+        const docText = docHtml
+          .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, ' ')
+          .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, ' ')
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+
+        // Executive departure — named officer + departure verb in same sentence
+        const deptMatch = docText.match(
+          /([A-Z][^.]{10,250}(?:resign|departure|step(?:ping)? down|terminat)[^.]{0,200}\.)/i,
+        );
+        if (deptMatch && !data.executiveDepartures.some(s => s.includes(accNo))) {
+          data.executiveDepartures.push(
+            `SEC 8-K (${date}): ${deptMatch[1].slice(0, 350)} [URL:${filingUrl}] [SOURCE:SEC EDGAR]`,
+          );
+        }
+
+        // Workforce / restructuring language
+        const rfMatch = docText.match(
+          /([^.]{0,80}(?:reduction in force|workforce reduction|position(?:s)? eliminated|layoff|restructuring program|severance)[^.]{0,250}\.)/i,
+        );
+        if (rfMatch && !data.layoffSignals.some(s => s.includes(accNo))) {
+          data.layoffSignals.push(
+            `SEC 8-K (${date}): ${rfMatch[1].slice(0, 350)} [URL:${filingUrl}] [SOURCE:SEC EDGAR]`,
+          );
+        }
+      } catch { /* skip if fetch or parse fails */ }
+    }));
   }
 
   // Annual/Quarterly filings (10-K, 10-Q) — key for public companies
@@ -1340,6 +1407,34 @@ export async function scrapeSEC(
     const fundM = text.match(/\$[\d.]+\s*(?:B|M|billion|million)\s*(?:raised|funding|valuation|series)/i);
     if (fundM) data.fundingSignals.push(`General search: ${fundM[0].trim()}`);
     sources.push({ url: r.link, type: 'sec', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
+  }
+
+  // Parent company / subsidiary detection
+  // Finds "acquired by", "division of", "subsidiary of", "owned by" relationships
+  const parentResults = await searchWeb(
+    `"${companyName}" "subsidiary of" OR "division of" OR "acquired by" OR "owned by" OR "parent company"`,
+    6,
+  );
+  for (const r of parentResults) {
+    const text = `${r.title} ${r.snippet}`;
+    // Match: "subsidiary of X", "division of X", "acquired by X", etc.
+    const parentM = text.match(
+      /(?:subsidiary of|division of|acquired by|owned by|parent company[:\s]+|part of)\s+([A-Z][A-Za-z0-9\s,&.']+?)(?:\.|,|\s+(?:in|for|on|with|and)\s|$)/i,
+    );
+    if (parentM) {
+      const parentName = parentM[1].trim().replace(/\s+/g, ' ').slice(0, 80);
+      // Avoid matching the company itself or overly generic phrases
+      if (
+        parentName.split(' ').length >= 2 &&
+        parentName.toLowerCase() !== companyName.toLowerCase() &&
+        !/^(?:the|a|an|its|their|this|that)\s/i.test(parentName)
+      ) {
+        const existing = data.financialSignals.some(s => s.startsWith('Parent/Owner:'));
+        if (!existing) {
+          data.financialSignals.push(`Parent/Owner: ${parentName} [URL:${r.link}]`);
+        }
+      }
+    }
   }
 
   return { data, sources };

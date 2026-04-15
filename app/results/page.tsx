@@ -86,6 +86,7 @@ export default function ResultsPage() {
   const router = useRouter();
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [activeTab, setActiveTab] = useState('overview');
+  const [showAllReddit, setShowAllReddit] = useState(false);
 
   useEffect(() => {
     const stored = sessionStorage.getItem('fairladder_result');
@@ -328,7 +329,7 @@ export default function ResultsPage() {
                   Reddit Intelligence <span className="text-[#4a5568] font-normal normal-case text-xs ml-1">{result.rawData.reddit.length} threads found</span>
                 </h3>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {result.rawData.reddit.slice(0, 6).map((thread, i) => (
+                  {(showAllReddit ? result.rawData.reddit : result.rawData.reddit.slice(0, 6)).map((thread, i) => (
                     <div key={i} className="p-3 rounded-xl bg-orange-500/5 border border-orange-500/15 hover:border-orange-500/30 transition-colors">
                       <div className="flex items-start gap-2 mb-2">
                         <span className="text-xs text-orange-400 font-medium flex-shrink-0">r/{thread.subreddit}</span>
@@ -345,6 +346,14 @@ export default function ResultsPage() {
                     </div>
                   ))}
                 </div>
+                {result.rawData.reddit.length > 6 && (
+                  <button
+                    onClick={() => setShowAllReddit(s => !s)}
+                    className="mt-4 w-full py-2 text-xs text-orange-400/70 hover:text-orange-300 border border-[#1e2736] hover:border-orange-500/30 rounded-xl transition-all"
+                  >
+                    {showAllReddit ? 'Show fewer threads' : `Show all ${result.rawData.reddit.length} threads`}
+                  </button>
+                )}
               </div>
             )}
 

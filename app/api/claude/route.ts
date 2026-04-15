@@ -199,7 +199,10 @@ ${(scrapedData.news ?? [])
     return bMatch - aMatch;
   })
   .slice(0, 50)
-  .map(n => `[${n.publishedAt?.slice(0, 10)}] ${n.title} — ${n.summary?.slice(0, 80)} [URL:${n.url}]`)
+  .map(n => {
+    const isPR = /prnewswire\.com|businesswire\.com|globenewswire\.com|accesswire\.com|einpresswire\.com/i.test(n.url);
+    return `[${n.publishedAt?.slice(0, 10)}]${isPR ? ' [COMPANY PR — self-published wire, not editorial]' : ''} ${n.title} — ${n.summary?.slice(0, 80)} [URL:${n.url}]`;
+  })
   .join('\n') || 'none found'}
 
 REDDIT EMPLOYEE DISCUSSIONS (${scrapedData.reddit?.length ?? 0} threads — unfiltered employee voice):
