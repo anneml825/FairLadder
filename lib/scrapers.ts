@@ -869,6 +869,60 @@ export async function scrapeLevels(
 }
 
 // ── BLS ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Extract specific percentile salary figures from text.
+ * Handles patterns like "25th percentile: $85,000", "$95k at the 75th percentile",
+ * "10th percentile $62,000", "median annual wage $115,000".
+ */
+function extractPercentileData(text: string): {
+  p10?: number; p25?: number; p50?: number; p75?: number; p90?: number;
+} {
+  const result: { p10?: number; p25?: number; p50?: number; p75?: number; p90?: number } = {};
+
+  const patterns: Array<[keyof typeof result, RegExp]> = [
+    ['p10', /10th?\s*percentile[^$\d]{0,20}\$?\s*(\d{2,3}(?:,\d{3})?(?:\.\d+)?)\s*(k|K)?/i],
+    ['p25', /25th?\s*percentile[^$\d]{0,20}\$?\s*(\d{2,3}(?:,\d{3})?(?:\.\d+)?)\s*(k|K)?/i],
+    ['p50', /(?:50th?\s*percentile|median\s*(?:annual\s*)?(?:wage|salary))[^$\d]{0,20}\$?\s*(\d{2,3}(?:,\d{3})?(?:\.\d+)?)\s*(k|K)?/i],
+    ['p75', /75th?\s*percentile[^$\d]{0,20}\$?\s*(\d{2,3}(?:,\d{3})?(?:\.\d+)?)\s*(k|K)?/i],
+    ['p90', /90th?\s*percentile[^$\d]{0,20}\$?\s*(\d{2,3}(?:,\d{3})?(?:\.\d+)?)\s*(k|K)?/i],
+  ];
+
+  for (const [key, pattern] of patterns) {
+    const m = text.match(pattern);
+    if (m) {
+      const n = parseFloat(m[1].replace(/,/g, ''));
+      const val = m[2] ? n * 1000 : n;
+      if (val >= 25_000 && val <= 800_000) result[key] = Math.round(val);
+    }
+  }
+  return result;
+}
+
+/**
+ * Role-category-aware percentile multipliers.
+ * Tech/Finance have wide distributions; Healthcare/Education are narrow.
+ */
+function getPercentileFactors(role: string): { p10: number; p25: number; p75: number; p90: number } {
+  const r = role.toLowerCase();
+  if (/\b(?:engineer|developer|software|data\s*scientist|architect|devops|sre|ml|machine\s*learning|ai\s*engineer|full.?stack|backend|frontend|quantitative)\b/.test(r)) {
+    return { p10: 0.52, p25: 0.70, p75: 1.42, p90: 1.90 }; // tech: wide, senior 3–4× entry
+  }
+  if (/\b(?:finance|investment|banking|trader|portfolio|hedge\s*fund|private\s*equity|analyst)\b/.test(r)) {
+    return { p10: 0.48, p25: 0.65, p75: 1.50, p90: 2.10 }; // finance: very wide, bonus-heavy
+  }
+  if (/\b(?:nurse|physician|doctor|surgeon|pharmacist|dentist|therapist|clinical)\b/.test(r)) {
+    return { p10: 0.68, p25: 0.83, p75: 1.22, p90: 1.45 }; // healthcare: union/license constrained
+  }
+  if (/\b(?:teacher|professor|principal|instructor|educator|school)\b/.test(r)) {
+    return { p10: 0.73, p25: 0.87, p75: 1.17, p90: 1.36 }; // education: very tight bands
+  }
+  if (/\b(?:sales|account\s*executive|business\s*development|sales\s*rep)\b/.test(r)) {
+    return { p10: 0.50, p25: 0.68, p75: 1.45, p90: 1.95 }; // sales: wide due to OTE variable
+  }
+  return { p10: 0.58, p25: 0.76, p75: 1.30, p90: 1.65 }; // general default
+}
+
 export async function scrapeBLS(
   role: string,
   location?: string,
@@ -886,93 +940,147 @@ export async function scrapeBLS(
     locationData: '',
   };
 
-  // ── Strategy 1 (PRIMARY): Serper web search across salary sites ──────────────
-  // Salary aggregator sites (salary.com, payscale, glassdoor/Salaries, bls.gov) reliably
-  // show dollar figures in Google search snippets — much more reliable than news summaries.
-  const salarySearches = [
-    `"${role}" average salary 2024 2025 site:salary.com OR site:payscale.com OR site:glassdoor.com`,
-    `"${role}" median annual wage site:bls.gov`,
-    `"${role}" average salary ${location || 'United States'} 2024`,
-    `"${role}" salary comparably.com OR ziprecruiter.com OR builtin.com`,
-  ];
+  // ── All searches run in parallel ─────────────────────────────────────────────
+  const locationQ = location && location !== 'Remote' ? location : 'United States';
 
-  // Run all salary queries in parallel — no early break, we want sources from all of them
-  const allSalarySnippets: string[] = [];
-  const salaryResultSets = await Promise.all(salarySearches.map(q => searchWeb(q, 6)));
-  for (const results of salaryResultSets) {
-    if (results.length > 0) {
-      allSalarySnippets.push(...results.map(r => `${r.title} ${r.snippet}`));
-      // Only save results that actually contain salary figures — skip generic job description pages
-      for (const r of results) {
-        const snippet = `${r.title} ${r.snippet}`;
-        if (/\$[\d,]+|\d{2,3},\d{3}|per.?year|annual.?salary|average.?salary|median.?salary|median.?wage/i.test(snippet)) {
-          sources.push({ url: r.link, type: 'bls', title: r.title.slice(0, 80), timestamp: new Date().toISOString() });
-        }
-      }
+  const [
+    salarySet1,
+    salarySet2,
+    salarySet3,
+    salarySet4,
+    percentileResults,
+    blsOesResults,
+    locResults,
+  ] = await Promise.all([
+    searchWeb(`"${role}" average salary 2024 2025 site:salary.com OR site:payscale.com OR site:glassdoor.com`, 6),
+    searchWeb(`"${role}" median annual wage site:bls.gov`, 5),
+    searchWeb(`"${role}" average salary ${locationQ} 2024 2025`, 5),
+    searchWeb(`"${role}" salary comparably.com OR ziprecruiter.com OR builtin.com`, 5),
+    // Specifically look for percentile breakdown data
+    searchWeb(`"${role}" "25th percentile" "75th percentile" salary 2024 2025`, 6),
+    // BLS OES pages have full p10/p25/p75/p90 tables
+    searchWeb(`"${role}" site:bls.gov/oes annual percentile wage estimate`, 4),
+    // Location-specific
+    location && location !== 'Remote'
+      ? searchWeb(`"${role}" salary "${location}" "25th percentile" OR "75th percentile" OR average 2024 2025`, 5)
+      : Promise.resolve([]),
+  ]);
+
+  // ── Step 1: Extract median from general salary snippets ──────────────────────
+  const allSalaryResults = [...salarySet1, ...salarySet2, ...salarySet3, ...salarySet4];
+  const allSalaryText = allSalaryResults.map(r => `${r.title} ${r.snippet}`).join(' ');
+  for (const r of allSalaryResults) {
+    const snippet = `${r.title} ${r.snippet}`;
+    if (/\$[\d,]+|\d{2,3},\d{3}|per.?year|annual.?salary|average.?salary|median.?salary|median.?wage/i.test(snippet)) {
+      sources.push({ url: r.link, type: 'bls', title: r.title.slice(0, 80), timestamp: new Date().toISOString() });
     }
   }
-  // Extract median from all collected salary figures
-  const allNums = extractSalariesFromText(allSalarySnippets.join(' '));
+  const allNums = extractSalaries(allSalaryText);
   if (allNums.length > 0) {
     const sorted = allNums.sort((a, b) => a - b);
     data.medianSalary = sorted[Math.floor(sorted.length / 2)];
   }
 
-  // Location premium — separate Serper search for location-specific figure
-  if (location && location !== 'Remote' && !data.locationData) {
-    const locResults = await searchWeb(`"${role}" salary "${location}" average 2024 2025`, 5);
-    const locText = locResults.map(r => `${r.title} ${r.snippet}`).join(' ');
-    const locNums = extractSalariesFromText(locText);
-    if (locNums.length > 0) {
-      const locMedian = locNums.sort((a, b) => a - b)[Math.floor(locNums.length / 2)];
-      data.locationData = `${location} average: $${locMedian.toLocaleString()}`;
-      for (const r of locResults.slice(0, 1)) {
+  // ── Step 2: Extract real percentile figures from percentile-specific snippets ─
+  const percentileSnippetText = percentileResults.map(r => `${r.title} ${r.snippet}`).join(' ');
+  const pFromSnippets = extractPercentileData(percentileSnippetText);
+  if (pFromSnippets.p25 && pFromSnippets.p75) {
+    if (!data.p25) data.p25 = pFromSnippets.p25;
+    if (!data.p75) data.p75 = pFromSnippets.p75;
+    if (!data.medianSalary && pFromSnippets.p50) data.medianSalary = pFromSnippets.p50;
+    if (!data.p10 && pFromSnippets.p10) data.p10 = pFromSnippets.p10;
+    if (!data.p90 && pFromSnippets.p90) data.p90 = pFromSnippets.p90;
+    for (const r of percentileResults.slice(0, 2)) {
+      if (/percentile|\$[\d,]+/i.test(`${r.title} ${r.snippet}`)) {
         sources.push({ url: r.link, type: 'bls', title: r.title.slice(0, 80), timestamp: new Date().toISOString() });
       }
     }
   }
 
-  // ── Strategy 2: BLS Occupational Outlook Handbook (official government data) ──
-  // Tries fuzzy-matching the role against BLS occupational categories.
+  // ── Step 3: BLS OES page — fetch actual percentile table ─────────────────────
+  // Only do this if we still lack p25/p75 — costs an extra fetch but gives authoritative data
+  if ((!data.p25 || !data.p75) && blsOesResults.length > 0) {
+    const oesPage = blsOesResults.find(r => /bls\.gov\/oes\//.test(r.link));
+    if (oesPage) {
+      const oesHtml = await fetchHtml(oesPage.link);
+      if (oesHtml) {
+        const $oes = cheerio.load(oesHtml);
+        // OES pages: percentile table has column headers 10%, 25%, 50%, 75%, 90%
+        $oes('table').each((_, table) => {
+          if (data.p25 && data.p75) return; // already found
+          const headers = $oes(table).find('tr').first().find('th, td')
+            .map((_, el) => $oes(el).text().replace(/\s+/g, ' ').trim()).get();
+          const idx: Record<string, number> = {};
+          headers.forEach((h, i) => {
+            if (/\b10\b/.test(h)) idx.p10 = i;
+            if (/\b25\b/.test(h)) idx.p25 = i;
+            if (/\b50\b|median/i.test(h)) idx.p50 = i;
+            if (/\b75\b/.test(h)) idx.p75 = i;
+            if (/\b90\b/.test(h)) idx.p90 = i;
+          });
+          if (idx.p50 === undefined && idx.p25 === undefined) return;
+          $oes(table).find('tr').each((_, row) => {
+            const rowText = $oes(row).text().toLowerCase();
+            if (!/annual/i.test(rowText)) return;
+            const cells = $oes(row).find('td');
+            const getCell = (i?: number): number | undefined => {
+              if (i === undefined) return undefined;
+              const raw = $oes(cells.eq(i)).text().replace(/[$,\s]/g, '');
+              const n = parseInt(raw);
+              return n >= 25_000 && n <= 800_000 ? n : undefined;
+            };
+            if (!data.p10) data.p10 = getCell(idx.p10) ?? null;
+            if (!data.p25) data.p25 = getCell(idx.p25) ?? null;
+            if (!data.medianSalary) data.medianSalary = getCell(idx.p50) ?? null;
+            if (!data.p75) data.p75 = getCell(idx.p75) ?? null;
+            if (!data.p90) data.p90 = getCell(idx.p90) ?? null;
+          });
+        });
+        if (data.p25 || data.medianSalary) {
+          // Grab occupation title from the page <h1>
+          const title = $oes('h1').first().text().trim();
+          if (title) data.occupationTitle = title;
+          sources.push({ url: oesPage.link, type: 'bls', title: `BLS OES — ${data.occupationTitle}`, timestamp: new Date().toISOString() });
+        }
+      }
+    }
+  }
+
+  // ── Step 4: BLS Occupational Outlook Handbook (fallback for median) ───────────
   if (!data.medianSalary) {
     const oohQuery = role.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim().replace(/\s+/g, '+');
     const oohUrl = `https://www.bls.gov/ooh/occupation-finder.htm?pay=all&education=all&training=all&newjobs=all&growth=all&submit=GO&searchbar=${oohQuery}`;
     const oohHtml = await fetchHtml(oohUrl);
     if (oohHtml) {
       const $o = cheerio.load(oohHtml);
+      const roleWords = role.toLowerCase().split(/\s+/).filter(w => w.length > 4);
       $o('table tbody tr').each((_, row) => {
         if (data.medianSalary) return;
-        const cells = $o(row).find('td');
         const rowText = $o(row).text();
-        // Match on ANY word from the role title (catches "Writers" for "Senior Copywriter")
-        const roleWords = role.toLowerCase().split(/\s+/).filter(w => w.length > 4);
-        const roleMatch = roleWords.some(w => rowText.toLowerCase().includes(w));
-        if (roleMatch) {
-          const payCell = [...Array(cells.length).keys()]
-            .map(i => $o(cells[i]).text().trim())
-            .find(t => /^\$[\d,]+/.test(t));
-          if (payCell) {
-            const val = parseInt(payCell.replace(/[^0-9]/g, ''));
-            if (val >= 25000 && val <= 600000) {
-              data.medianSalary = val;
-              data.occupationTitle = $o(cells[0]).text().trim() || role;
-              sources.push({ url: oohUrl, type: 'bls', title: 'BLS Occupational Outlook Handbook', timestamp: new Date().toISOString() });
-            }
+        if (!roleWords.some(w => rowText.toLowerCase().includes(w))) return;
+        const cells = $o(row).find('td');
+        const payCell = [...Array(cells.length).keys()]
+          .map(i => $o(cells.eq(i)).text().trim())
+          .find(t => /^\$[\d,]+/.test(t));
+        if (payCell) {
+          const val = parseInt(payCell.replace(/[^0-9]/g, ''));
+          if (val >= 25_000 && val <= 600_000) {
+            data.medianSalary = val;
+            data.occupationTitle = $o(cells.eq(0)).text().trim() || role;
+            sources.push({ url: oohUrl, type: 'bls', title: 'BLS Occupational Outlook Handbook', timestamp: new Date().toISOString() });
           }
         }
       });
     }
   }
 
-  // ── Strategy 3: ZipRecruiter + Indeed salary pages (static, no JS) ───────────
+  // ── Step 5: ZipRecruiter fallback (last resort for median) ───────────────────
   if (!data.medianSalary) {
-    const roleSlug = role.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
     const zipUrl = `https://www.ziprecruiter.com/Salaries/${encodeURIComponent(role.replace(/\s+/g, '-'))}-Salary`;
     const zipHtml = await fetchHtml(zipUrl);
     if (zipHtml && zipHtml.length > 2000) {
       const $z = cheerio.load(zipHtml);
-      const bodyText = $z('body').text().replace(/\s+/g, ' ');
-      const nums = extractSalariesFromText(bodyText);
+      const nums = extractSalaries($z('body').text().replace(/\s+/g, ' '));
       if (nums.length > 0) {
         data.medianSalary = nums.sort((a, b) => a - b)[Math.floor(nums.length / 2)];
         sources.push({ url: zipUrl, type: 'bls', title: `${role} Salary — ZipRecruiter`, timestamp: new Date().toISOString() });
@@ -980,21 +1088,59 @@ export async function scrapeBLS(
     }
   }
 
-  // Derive percentiles from median using standard wage distribution ratios
-  if (data.medianSalary && !data.p25) {
-    data.p10 = Math.round(data.medianSalary * 0.58);
-    data.p25 = Math.round(data.medianSalary * 0.76);
-    data.p75 = Math.round(data.medianSalary * 1.30);
-    data.p90 = Math.round(data.medianSalary * 1.65);
+  // ── Step 6: Location-specific data ───────────────────────────────────────────
+  if (location && location !== 'Remote' && locResults.length > 0) {
+    const locText = locResults.map(r => `${r.title} ${r.snippet}`).join(' ');
+    // Try to get real percentiles for the location first
+    const locPercentiles = extractPercentileData(locText);
+    if (locPercentiles.p25 && locPercentiles.p75) {
+      // We have location-specific percentile data — use it directly
+      data.p25 = locPercentiles.p25;
+      data.p75 = locPercentiles.p75;
+      if (locPercentiles.p50) data.medianSalary = locPercentiles.p50;
+      if (locPercentiles.p10) data.p10 = locPercentiles.p10;
+      if (locPercentiles.p90) data.p90 = locPercentiles.p90;
+      data.locationData = `${location}: $${(locPercentiles.p50 ?? data.medianSalary ?? 0).toLocaleString()} median`;
+    } else {
+      // Fall back to location median and use it to ratio-shift all bands
+      const locNums = extractSalaries(locText);
+      if (locNums.length > 0) {
+        const locMedian = locNums.sort((a, b) => a - b)[Math.floor(locNums.length / 2)];
+        data.locationData = `${location} average: $${locMedian.toLocaleString()}`;
+        // Shift all percentile bands proportionally if we have a national median to compare against
+        if (data.medianSalary && locMedian !== data.medianSalary) {
+          const ratio = Math.min(Math.max(locMedian / data.medianSalary, 0.55), 2.0);
+          data.medianSalary = locMedian;
+          if (data.p10) data.p10 = Math.round(data.p10 * ratio);
+          if (data.p25) data.p25 = Math.round(data.p25 * ratio);
+          if (data.p75) data.p75 = Math.round(data.p75 * ratio);
+          if (data.p90) data.p90 = Math.round(data.p90 * ratio);
+        } else if (!data.medianSalary) {
+          data.medianSalary = locMedian;
+        }
+      }
+    }
+    if (locResults[0]) {
+      sources.push({ url: locResults[0].link, type: 'bls', title: locResults[0].title.slice(0, 80), timestamp: new Date().toISOString() });
+    }
   }
 
-  // H-1B DOL salary disclosure — real certified wages paid by this company
+  // ── Step 7: Derive remaining percentiles from median ─────────────────────────
+  // Uses role-category-aware multipliers — tech is wider, healthcare is narrower, etc.
+  if (data.medianSalary) {
+    const f = getPercentileFactors(role);
+    if (!data.p10)  data.p10  = Math.round(data.medianSalary * f.p10);
+    if (!data.p25)  data.p25  = Math.round(data.medianSalary * f.p25);
+    if (!data.p75)  data.p75  = Math.round(data.medianSalary * f.p75);
+    if (!data.p90)  data.p90  = Math.round(data.medianSalary * f.p90);
+  }
+
+  // ── Step 8: H-1B DOL salary disclosure ───────────────────────────────────────
   const { hibData, sources: hibSources } = companyName
     ? await scrapeHIBSalaries(companyName, role)
     : { hibData: undefined, sources: [] };
   if (hibData) {
     data.hibData = hibData;
-    // If H-1B data gives a better anchor than estimates, use it
     if (!data.medianSalary) data.medianSalary = hibData.median;
     sources.push(...hibSources);
   }

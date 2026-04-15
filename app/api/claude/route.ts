@@ -117,6 +117,7 @@ BREVITY RULES (non-negotiable):
 - Timeline sourceUrl: copy exact URL from [URL:...] tags in the news data. Empty string "" if no match.
 - roleScorecard "Posting Age Signal": if postedDate provided, calculate days since posted and flag if >45 days. If no date, analyze company hiring velocity from signals. NEVER just say "no date provided."
 - Salary figures must derive from BLS/Levels/scraped data provided.
+- SALARY PERCENTILES: When BLS P25 and P75 are provided (not '?'), copy them DIRECTLY into salaryIntelligence.p25 and .p75 — do NOT re-estimate. Set marketMin = BLS P10 if available, else p25 × 0.78. Set marketMax = BLS P90 if available, else p75 × 1.35. If location data is provided, apply that median as salaryIntelligence.median and shift all bands proportionally.
 
 RADAR SCORING RULES — each dimension is 1–10. Use these anchors strictly. Interpolate between them. Never default to 5 when data exists.
 
