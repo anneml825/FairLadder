@@ -1088,6 +1088,35 @@ export async function scrapeBLS(
     }
   }
 
+  // ── Step 5b: Simplified role fallback — strip seniority for niche titles ─────
+  // "Senior Regenerative Grazing Consultant" → "Regenerative Grazing Consultant"
+  // "Lead Web3 Community Manager" → "Web3 Community Manager"
+  // If still no data, try the core function words without seniority prefix.
+  if (!data.medianSalary) {
+    const simplified = role
+      .replace(/^(?:senior|lead|principal|staff|head\s+of|director\s+of|vp\s+of|chief|junior|jr\.?|associate|sr\.?|founding|founding\s+)\s+/i, '')
+      .replace(/\s+(?:i|ii|iii|iv|1|2|3)$/i, '')
+      .trim();
+
+    if (simplified !== role && simplified.split(' ').length >= 2) {
+      const [simpSet1, simpSet2] = await Promise.all([
+        searchWeb(`"${simplified}" average salary 2024 2025 site:salary.com OR site:payscale.com OR site:glassdoor.com`, 5),
+        searchWeb(`"${simplified}" median annual wage site:bls.gov`, 4),
+      ]);
+      const simpText = [...simpSet1, ...simpSet2].map(r => `${r.title} ${r.snippet}`).join(' ');
+      const simpNums = extractSalaries(simpText);
+      if (simpNums.length > 0) {
+        data.medianSalary = simpNums.sort((a, b) => a - b)[Math.floor(simpNums.length / 2)];
+        data.occupationTitle = `${simplified} (from: ${role})`;
+        for (const r of [...simpSet1, ...simpSet2].slice(0, 2)) {
+          if (/\$[\d,]+|\d{2,3},\d{3}/i.test(`${r.title} ${r.snippet}`)) {
+            sources.push({ url: r.link, type: 'bls', title: r.title.slice(0, 80), timestamp: new Date().toISOString() });
+          }
+        }
+      }
+    }
+  }
+
   // ── Step 6: Location-specific data ───────────────────────────────────────────
   if (location && location !== 'Remote' && locResults.length > 0) {
     const locText = locResults.map(r => `${r.title} ${r.snippet}`).join(' ');

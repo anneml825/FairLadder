@@ -21,7 +21,7 @@ function generateBellCurve(min: number, max: number, median: number, points = 10
 }
 
 export default function BellCurve({ data }: Props) {
-  const { marketMin, marketMax, median, p25, p75, offerValue, percentile, verdict, targetSalary } = data;
+  const { marketMin, marketMax, median, p25, p75, offerValue, percentile, verdict, targetSalary, dataNote } = data;
 
   const chartData = generateBellCurve(marketMin, marketMax, median);
 
@@ -62,6 +62,14 @@ export default function BellCurve({ data }: Props) {
           <span className={`text-xs font-bold ${vc.text}`}>{vc.label}</span>
         </div>
       </div>
+
+      {/* Adjacent role notice — shown when direct market data wasn't available */}
+      {dataNote && dataNote !== 'null' && (
+        <div className="mb-4 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-start gap-2">
+          <span className="text-amber-400 text-xs mt-0.5 shrink-0">⚠</span>
+          <p className="text-xs text-amber-300/80 leading-relaxed">{dataNote}</p>
+        </div>
+      )}
 
       {/* Bell curve chart */}
       <div className="h-40 relative">

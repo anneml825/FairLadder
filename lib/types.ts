@@ -157,6 +157,8 @@ export interface SalaryIntelligence {
   percentile: number;
   verdict: 'LOW' | 'FAIR' | 'STRONG';
   targetSalary: number;
+  /** Set when using an adjacent/comparable role instead of direct market data */
+  dataNote?: string;
 }
 
 export interface RoleScorecardRow {
