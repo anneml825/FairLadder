@@ -479,12 +479,20 @@ export async function scrapeGlassdoor(
         }
       }
       // Track the first Glassdoor company URL (Reviews or Overview) for direct fetch
-      if (!glassdoorDirectUrl && lower.includes('glassdoor.com') &&
+      const isGlassdoorCompanyPage = lower.includes('glassdoor.com') &&
           (lower.includes('/reviews/') || lower.includes('-reviews-') ||
-           lower.includes('/overview/') || lower.includes('-overview-') || lower.includes('/working-at-'))) {
-        glassdoorDirectUrl = r.link;
-        sources.push({ url: r.link, type: 'glassdoor', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
-      } else if (lower.includes('comparably.com')) {
+           lower.includes('/overview/') || lower.includes('-overview-') || lower.includes('/working-at-'));
+      if (isGlassdoorCompanyPage && !glassdoorDirectUrl) glassdoorDirectUrl = r.link;
+
+      // Save ALL review-site results as sources (Glassdoor, Comparably, Indeed, Blind, Levels, etc.)
+      const isReviewSite = lower.includes('glassdoor.com') || lower.includes('comparably.com') ||
+        lower.includes('indeed.com') || lower.includes('teamblind.com') ||
+        lower.includes('levels.fyi') || lower.includes('reddit.com') ||
+        lower.includes('linkedin.com') || lower.includes('salary.com') ||
+        lower.includes('payscale.com') || lower.includes('builtin.com') ||
+        lower.includes('ziprecruiter.com') || lower.includes('builtinnyc.com') ||
+        lower.includes('builtinla.com') || lower.includes('builtinchicago.com');
+      if (isReviewSite) {
         sources.push({ url: r.link, type: 'glassdoor', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
       }
     }
@@ -548,6 +556,8 @@ export async function scrapeGlassdoor(
   const comparablySlug = companyName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 
   const comparablyReviewsUrl = `https://www.comparably.com/companies/${comparablySlug}/reviews`;
+  // Always add Comparably as a source — even if fetch fails it's a real attempted source
+  sources.push({ url: comparablyReviewsUrl, type: 'glassdoor', title: `${companyName} Reviews - Comparably`, timestamp: new Date().toISOString() });
   const comparablyHtml = await fetchHtml(comparablyReviewsUrl);
   if (comparablyHtml && comparablyHtml.length > 2000) {
     const $c = cheerio.load(comparablyHtml);
@@ -576,12 +586,12 @@ export async function scrapeGlassdoor(
       const t = $c(el).text().trim();
       if (t.length > 15 && t.length < 300 && data.cons.length < 5) data.cons.push(t.slice(0, 200));
     });
-    sources.push({ url: comparablyReviewsUrl, type: 'glassdoor', title: `${companyName} Reviews - Comparably`, timestamp: new Date().toISOString() });
   }
 
   // Comparably CEO page
+  const comparablyCeoUrl = `https://www.comparably.com/companies/${comparablySlug}/ceo`;
+  sources.push({ url: comparablyCeoUrl, type: 'glassdoor', title: `${companyName} CEO - Comparably`, timestamp: new Date().toISOString() });
   if (!data.ceoName || !data.ceoApproval) {
-    const comparablyCeoUrl = `https://www.comparably.com/companies/${comparablySlug}/ceo`;
     const ceoPageHtml = await fetchHtml(comparablyCeoUrl);
     if (ceoPageHtml && ceoPageHtml.length > 1000) {
       const $cc = cheerio.load(ceoPageHtml);
@@ -591,13 +601,13 @@ export async function scrapeGlassdoor(
       if (ceoNameM && !data.ceoName) data.ceoName = ceoNameM[1].trim();
       const approvalM = bodyText.match(/(\d+)%\s*(?:of employees|approve|positive)/i);
       if (approvalM && !data.ceoApproval) data.ceoApproval = parseInt(approvalM[1]);
-      sources.push({ url: comparablyCeoUrl, type: 'glassdoor', title: `${companyName} CEO - Comparably`, timestamp: new Date().toISOString() });
     }
   }
 
   // Google News RSS — reputation, CEO, interview signals
-  const repQuery = `"${companyName}" glassdoor OR comparably reviews rating culture employees`;
-  const repRss = await fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(repQuery)}&hl=en-US&gl=US&ceid=US:en`);
+  const repRssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(`"${companyName}" glassdoor OR comparably reviews rating culture employees`)}&hl=en-US&gl=US&ceid=US:en`;
+  sources.push({ url: repRssUrl, type: 'glassdoor', title: `${companyName} Reputation News`, timestamp: new Date().toISOString() });
+  const repRss = await fetchHtml(repRssUrl);
   if (repRss && repRss.length > 500) {
     const $r = cheerio.load(repRss, { xmlMode: true });
     const allText: string[] = [];
@@ -618,11 +628,12 @@ export async function scrapeGlassdoor(
                        plain.match(/([A-Z][a-z]+ [A-Z][a-z]+)[,\s]+CEO/i);
       if (ceoNameM) data.ceoName = ceoNameM[1].trim();
     }
-    sources.push({ url: `https://news.google.com/rss/search?q=${encodeURIComponent(repQuery)}`, type: 'glassdoor', title: `${companyName} Reputation News`, timestamp: new Date().toISOString() });
   }
 
   const intRssQuery = `"${companyName}" interview process experience questions difficulty`;
-  const intRss = await fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(intRssQuery)}&hl=en-US&gl=US&ceid=US:en`);
+  const intRssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(intRssQuery)}&hl=en-US&gl=US&ceid=US:en`;
+  sources.push({ url: intRssUrl, type: 'glassdoor', title: `${companyName} Interview Data`, timestamp: new Date().toISOString() });
+  const intRss = await fetchHtml(intRssUrl);
   if (intRss && intRss.length > 500) {
     const $int = cheerio.load(intRss, { xmlMode: true });
     $int('item').each((_, el) => {
@@ -637,13 +648,13 @@ export async function scrapeGlassdoor(
         data.interviewQuotes.push(desc.slice(0, 250));
       }
     });
-    sources.push({ url: `https://news.google.com/rss/search?q=${encodeURIComponent(intRssQuery)}`, type: 'glassdoor', title: `${companyName} Interview Data`, timestamp: new Date().toISOString() });
   }
 
   // Strategy 2: Indeed company reviews — structured page with JSON-LD
+  const indeedSlug = companyName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  const indeedUrl = `https://www.indeed.com/cmp/${indeedSlug}/reviews`;
+  sources.push({ url: indeedUrl, type: 'glassdoor', title: `${companyName} Reviews - Indeed`, timestamp: new Date().toISOString() });
   if (!data.overallRating || data.pros.length === 0) {
-    const indeedSlug = companyName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-    const indeedUrl = `https://www.indeed.com/cmp/${indeedSlug}/reviews`;
     const indeedHtml = await fetchHtml(indeedUrl, { Referer: 'https://www.indeed.com/' });
     if (indeedHtml && indeedHtml.length > 3000) {
       const $i = cheerio.load(indeedHtml);
@@ -681,8 +692,6 @@ export async function scrapeGlassdoor(
       $i('[data-testid="cons-list"] li, [class*="cons"] li').each((_, el) => {
         data.cons.push($i(el).text().trim().slice(0, 200));
       });
-
-      sources.push({ url: indeedUrl, type: 'glassdoor', title: `${companyName} Reviews - Indeed`, timestamp: new Date().toISOString() });
     }
   }
 
