@@ -1,5 +1,6 @@
 import axios from 'axios';
 import * as cheerio from 'cheerio';
+import { cacheLife } from 'next/cache';
 import {
   GoogleNewsResult,
   RedditThread,
@@ -23,6 +24,8 @@ const HEADERS = {
 // Primary search API — 2,500 free searches, no credit card needed.
 
 async function searchSerper(query: string, num = 10): Promise<SerpResult[]> {
+  'use cache';
+  cacheLife('days'); // cache each unique query for 24h — saves Serper quota on repeat analyses
   const key = process.env.SERPER_API_KEY;
   if (!key) return [];
   try {
@@ -1300,6 +1303,30 @@ export async function scrapeSEC(
     if (r.link.includes('linkedin.com/company')) {
       sources.push({ url: r.link, type: 'sec', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
     }
+  }
+
+  // BBB (Better Business Bureau) — complaint volume, rating, accreditation status
+  // Consumer-facing companies with scam/quality issues surface here immediately
+  const [bbbRes, ftcRes] = await Promise.all([
+    searchWeb(`site:bbb.org "${companyName}" complaints reviews rating`, 4),
+    searchWeb(`"${companyName}" site:ftc.gov OR "FTC" "${companyName}" enforcement complaint action`, 5),
+  ]);
+  for (const r of bbbRes) {
+    if (!r.link.includes('bbb.org')) continue;
+    const text = `${r.title} ${r.snippet}`;
+    const ratingM = text.match(/([A-F][+-]?)\s*(?:rating|rated)/i);
+    const complaintM = text.match(/([\d,]+)\s*complaints?/i);
+    const accredM = /accredited/i.test(text);
+    const signal = `BBB: ${companyName}${ratingM ? ` — ${ratingM[1]} rating` : ''}${complaintM ? `, ${complaintM[1]} complaints` : ''}${accredM ? ', accredited' : ', not listed as accredited'}`;
+    data.financialSignals.push(signal);
+    sources.push({ url: r.link, type: 'sec', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
+  }
+  for (const r of ftcRes) {
+    const text = `${r.title} ${r.snippet}`;
+    if (!/ftc\.gov|federal trade commission/i.test(r.link + text)) continue;
+    const dateM = text.match(/\b(20\d\d)\b/);
+    data.layoffSignals.push(`FTC action: ${r.title.slice(0, 80)}${dateM ? ` (${dateM[1]})` : ''} [URL:${r.link}] [SOURCE:FTC.gov]`);
+    sources.push({ url: r.link, type: 'sec', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
   }
 
   // General Google search — top 10 results for company name

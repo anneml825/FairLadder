@@ -178,7 +178,7 @@ Desired salary: $${request.desiredSalaryMin?.toLocaleString()}–$${request.desi
 
 JOB POSTING:
 ${scrapedData.jobPosting?.postedDate ? `Posted: ${scrapedData.jobPosting.postedDate}` : 'Posted date: not found — analyze hiring velocity from other signals'}
-${jobText.slice(0, 2500)}
+${jobText.slice(0, 5000)}
 
 COMPANY REVIEWS & CULTURE:
 Glassdoor: ${scrapedData.glassdoor?.overallRating ?? '?'}/5 | ${scrapedData.glassdoor?.reviewCount ?? '?'} reviews | CEO: ${scrapedData.glassdoor?.ceoName ?? 'unknown'} | CEO approval: ${scrapedData.glassdoor?.ceoApproval ?? '?'}% | Recommend: ${scrapedData.glassdoor?.recommendToFriend ?? '?'}%
