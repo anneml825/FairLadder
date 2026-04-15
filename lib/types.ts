@@ -1,3 +1,19 @@
+export interface CompanyFactsData {
+  isPublic: boolean;
+  employeeCount?: number;
+  employeeCountPriorYear?: number;
+  revenue?: number;
+  revenuePriorYear?: number;
+  netIncome?: number;
+  cashOnHand?: number;
+  longTermDebt?: number;
+  filingYear?: string;
+}
+
+export interface EnrichmentData {
+  companyFacts?: CompanyFactsData;
+}
+
 export interface AnalysisRequest {
   jobUrl?: string;
   jobText?: string;
@@ -229,5 +245,6 @@ export interface AnalysisResult {
     bls?: BLSData;
     sec?: SECData;
     jobPosting?: JobPostingData;
+    enrichment?: EnrichmentData;
   };
 }

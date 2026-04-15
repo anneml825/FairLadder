@@ -9,6 +9,8 @@ import {
   SECData,
   JobPostingData,
   ScrapedSource,
+  CompanyFactsData,
+  EnrichmentData,
 } from './types';
 import { getCachedQuery, setCachedQuery } from './cache';
 
@@ -1808,4 +1810,104 @@ export async function findJobPostingUrl(companyName: string, role: string): Prom
     if (jobResult) return jobResult.link;
   }
   return null;
+}
+
+// ─── EDGAR COMPANY FACTS ──────────────────────────────────────────────────────
+// Fetches structured annual financials directly from SEC EDGAR (free, no auth).
+// Returns null if company is not found or not public.
+
+async function fetchEdgarFacts(companyName: string): Promise<CompanyFactsData | null> {
+  const EDGAR_UA = 'FairLadder.ai hello@fairladder.ai';
+  try {
+    // Step 1: Find CIK via EDGAR full-text search (10-K filings only)
+    const searchRes = await axios.get(
+      `https://efts.sec.gov/LATEST/search-index?q=%22${encodeURIComponent(companyName)}%22&forms=10-K&dateRange=custom&startdt=2018-01-01`,
+      { headers: { 'User-Agent': EDGAR_UA, Accept: 'application/json' }, timeout: 8000 },
+    );
+
+    const hits: Array<{ _source?: Record<string, unknown> }> = searchRes.data?.hits?.hits ?? [];
+    if (!hits.length) return { isPublic: false };
+
+    const source = hits[0]?._source ?? {};
+
+    // Extract CIK — try entity_id field first, then parse from display_names
+    let cikStr = String(source.entity_id ?? '').replace(/^CIK/i, '');
+    if (!cikStr) {
+      const names: string[] = (source.display_names as string[]) ?? [];
+      const m = names[0]?.match(/\((\d{7,10})\)/);
+      if (m) cikStr = m[1];
+    }
+    if (!cikStr) return { isPublic: false };
+
+    const paddedCik = cikStr.padStart(10, '0');
+
+    // Step 2: Fetch structured XBRL company facts
+    const factsRes = await axios.get(
+      `https://data.sec.gov/api/xbrl/companyfacts/CIK${paddedCik}.json`,
+      { headers: { 'User-Agent': EDGAR_UA, Accept: 'application/json' }, timeout: 12000 },
+    );
+
+    const facts = factsRes.data?.facts;
+    if (!facts) return { isPublic: true };
+
+    type FactEntry = { val: number; end: string; form: string };
+
+    // Returns annual 10-K entries sorted newest first, for the first concept that has data
+    const getAnnual = (ns: string, ...concepts: string[]): FactEntry[] => {
+      for (const concept of concepts) {
+        const units = facts[ns]?.[concept]?.units ?? {};
+        const entries: FactEntry[] = (Object.values(units).flat() as FactEntry[])
+          .filter(e => e.form === '10-K' || e.form === '10-K/A')
+          .sort((a, b) => b.end.localeCompare(a.end));
+        if (entries.length) return entries;
+      }
+      return [];
+    };
+
+    const revE  = getAnnual('us-gaap', 'Revenues', 'RevenueFromContractWithCustomerExcludingAssessedTax', 'SalesRevenueNet', 'RevenuesNetOfInterestExpense');
+    const niE   = getAnnual('us-gaap', 'NetIncomeLoss', 'ProfitLoss');
+    const empE  = getAnnual('dei',     'EntityNumberOfEmployees');
+    const cashE = getAnnual('us-gaap', 'CashAndCashEquivalentsAtCarryingValue', 'Cash');
+    const debtE = getAnnual('us-gaap', 'LongTermDebt', 'LongTermDebtNoncurrent');
+
+    return {
+      isPublic: true,
+      revenue:               revE[0]?.val,
+      revenuePriorYear:      revE[1]?.val,
+      netIncome:             niE[0]?.val,
+      employeeCount:         empE[0]?.val,
+      employeeCountPriorYear: empE[1]?.val,
+      cashOnHand:            cashE[0]?.val,
+      longTermDebt:          debtE[0]?.val,
+      filingYear:            revE[0]?.end?.slice(0, 4) ?? empE[0]?.end?.slice(0, 4),
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ─── ENRICHMENT ───────────────────────────────────────────────────────────────
+// Aggregates all free-API enrichment data. Currently: EDGAR financials.
+// CourtListener, GitHub, NLRB, OSHA will be added in subsequent sessions.
+
+export async function scrapeEnrichment(
+  companyName: string,
+): Promise<{ data: EnrichmentData; sources: ScrapedSource[] }> {
+  const sources: ScrapedSource[] = [];
+
+  const companyFacts = await fetchEdgarFacts(companyName);
+
+  if (companyFacts?.isPublic) {
+    sources.push({
+      url: `https://www.sec.gov/cgi-bin/browse-edgar?company=${encodeURIComponent(companyName)}&action=getcompany&type=10-K`,
+      type: 'sec',
+      title: `${companyName} — SEC EDGAR 10-K`,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  return {
+    data: { companyFacts: companyFacts ?? undefined },
+    sources,
+  };
 }

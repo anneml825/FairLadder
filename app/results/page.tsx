@@ -318,6 +318,63 @@ export default function ResultsPage() {
                 </div>
               )}
 
+              {/* EDGAR company vitals — public companies only */}
+              {result.rawData?.enrichment?.companyFacts?.isPublic && (() => {
+                const f = result.rawData.enrichment!.companyFacts!;
+                const fmt = (n?: number) => n === undefined ? null : Math.abs(n) >= 1e9 ? `$${(n / 1e9).toFixed(1)}B` : `$${Math.round(n / 1e6)}M`;
+                const yoy = (curr?: number, prev?: number) => {
+                  if (!curr || !prev) return null;
+                  const pct = Math.round((curr - prev) / prev * 100);
+                  return { pct, up: curr >= prev };
+                };
+                return (
+                  <div className="mt-4 pt-4 border-t border-[#1e2736]">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="text-xs text-[#8892a4] uppercase tracking-wide font-medium">EDGAR 10-K Financials</div>
+                      <span className="text-[10px] text-[#4a5568]">{f.filingYear} annual filing</span>
+                    </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {f.employeeCount && (
+                        <div className="bg-[#0d1117]/50 rounded-xl p-3">
+                          <div className="text-[10px] text-[#8892a4] mb-1">Headcount</div>
+                          <div className="text-sm font-bold text-white">{f.employeeCount.toLocaleString()}</div>
+                          {yoy(f.employeeCount, f.employeeCountPriorYear) && (() => { const t = yoy(f.employeeCount, f.employeeCountPriorYear)!; return <div className={`text-[10px] mt-0.5 ${t.up ? 'text-emerald-400' : 'text-red-400'}`}>{t.up ? '↑' : '↓'} {Math.abs(t.pct)}% YoY</div>; })()}
+                        </div>
+                      )}
+                      {fmt(f.revenue) && (
+                        <div className="bg-[#0d1117]/50 rounded-xl p-3">
+                          <div className="text-[10px] text-[#8892a4] mb-1">Revenue</div>
+                          <div className="text-sm font-bold text-white font-mono">{fmt(f.revenue)}</div>
+                          {yoy(f.revenue, f.revenuePriorYear) && (() => { const t = yoy(f.revenue, f.revenuePriorYear)!; return <div className={`text-[10px] mt-0.5 ${t.up ? 'text-emerald-400' : 'text-red-400'}`}>{t.up ? '↑' : '↓'} {Math.abs(t.pct)}% YoY</div>; })()}
+                        </div>
+                      )}
+                      {f.netIncome !== undefined && (
+                        <div className="bg-[#0d1117]/50 rounded-xl p-3">
+                          <div className="text-[10px] text-[#8892a4] mb-1">Net Income</div>
+                          <div className={`text-sm font-bold font-mono ${f.netIncome >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                            {f.netIncome < 0 ? '-' : ''}{fmt(Math.abs(f.netIncome))}
+                          </div>
+                        </div>
+                      )}
+                      {fmt(f.cashOnHand) && (
+                        <div className="bg-[#0d1117]/50 rounded-xl p-3">
+                          <div className="text-[10px] text-[#8892a4] mb-1">Cash</div>
+                          <div className="text-sm font-bold text-white font-mono">{fmt(f.cashOnHand)}</div>
+                        </div>
+                      )}
+                    </div>
+                    <a
+                      href={`https://www.sec.gov/cgi-bin/browse-edgar?company=${encodeURIComponent(result.companyName)}&action=getcompany&type=10-K`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 mt-2 text-[10px] text-indigo-400/60 hover:text-indigo-300 transition-colors"
+                    >
+                      ↗ SEC EDGAR filings
+                    </a>
+                  </div>
+                );
+              })()}
+
               {/* Glassdoor snapshot */}
               {result.rawData?.glassdoor && (
                 <div className="mt-4 pt-4 border-t border-[#1e2736]">

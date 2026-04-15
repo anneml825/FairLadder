@@ -12,6 +12,7 @@ import {
   GoogleNewsResult,
   RedditThread,
   JobPostingData,
+  EnrichmentData,
 } from '@/lib/types';
 
 // ─── Step definitions ────────────────────────────────────────────────────────
@@ -24,6 +25,7 @@ type StepId =
   | 'levels'
   | 'bls'
   | 'sec'
+  | 'enrich'
   | 'claude';
 
 type StepStatus = 'pending' | 'running' | 'done' | 'error';
@@ -45,7 +47,8 @@ const INITIAL_STEPS: Step[] = [
   { id: 'levels',   label: 'Levels.fyi & comparable company salaries',        icon: '💰', status: 'pending', count: 0 },
   { id: 'bls',      label: 'BLS, ZipRecruiter, Payscale & H-1B DOL data',   icon: '📊', status: 'pending', count: 0 },
   { id: 'sec',      label: 'SEC, WARN Act, Crunchbase & LinkedIn signals',   icon: '📋', status: 'pending', count: 0 },
-  { id: 'claude',   label: 'Running intelligence analysis',            icon: '🤖', status: 'pending', count: 0 },
+  { id: 'enrich',   label: 'EDGAR financials, court records & GitHub',       icon: '🏛️', status: 'pending', count: 0 },
+  { id: 'claude',   label: 'Running intelligence analysis',                  icon: '🤖', status: 'pending', count: 0 },
 ];
 
 // ─── Component ───────────────────────────────────────────────────────────────
@@ -192,7 +195,7 @@ export default function AnalyzePage() {
       const companyContext = ctxSignals.slice(0, 3).join(' ');
 
       // ── 2. Fire all scraping calls in PARALLEL ────────────────────────────
-      const [newsRes, redditRes, glassdoorRes, levelsRes, blsRes, secRes] = await Promise.all([
+      const [newsRes, redditRes, glassdoorRes, levelsRes, blsRes, secRes, enrichRes] = await Promise.all([
 
         fetchStep<{ results: GoogleNewsResult[]; sources: ScrapedSource[] }>(
           'news', '/api/scrape/news', { companyName: request.companyName, role, companyContext }, signal,
@@ -216,6 +219,10 @@ export default function AnalyzePage() {
 
         fetchStep<{ data: SECData; sources: ScrapedSource[] }>(
           'sec', '/api/scrape/sec', { companyName: request.companyName, companyContext }, signal,
+        ),
+
+        fetchStep<{ data: EnrichmentData; sources: ScrapedSource[] }>(
+          'enrich', '/api/scrape/enrich', { companyName: request.companyName }, signal,
         ),
       ]);
 
@@ -252,6 +259,11 @@ export default function AnalyzePage() {
         addSources(secRes.sources.length);
       } else setStep('sec', { status: 'done', count: 0 });
 
+      if (enrichRes) {
+        setStep('enrich', { status: 'done', count: enrichRes.sources.length });
+        addSources(enrichRes.sources.length);
+      } else setStep('enrich', { status: 'done', count: 0 });
+
       // ── 3. Aggregate all sources ──────────────────────────────────────────
       const allSources: ScrapedSource[] = [
         ...(newsRes?.sources || []),
@@ -260,6 +272,7 @@ export default function AnalyzePage() {
         ...(levelsRes?.sources || []),
         ...(blsRes?.sources || []),
         ...(secRes?.sources || []),
+        ...(enrichRes?.sources || []),
       ];
 
       // ── 4. Claude analysis (streaming from Edge function) ─────────────────
@@ -292,6 +305,7 @@ export default function AnalyzePage() {
               bls: blsRes?.data || defaultBLS,
               sec: secRes?.data || defaultSEC,
               jobPosting,
+              enrich: enrichRes?.data,
             },
             sources: allSources,
           }),

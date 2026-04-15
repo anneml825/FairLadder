@@ -9,6 +9,7 @@ import {
   SECData,
   JobPostingData,
   ScrapedSource,
+  EnrichmentData,
 } from '@/lib/types';
 
 export const runtime = 'edge';
@@ -73,6 +74,7 @@ interface ClaudeRequestBody {
     bls: BLSData;
     sec: SECData;
     jobPosting?: JobPostingData;
+    enrich?: EnrichmentData;
   };
   sources: ScrapedSource[];
 }
@@ -119,6 +121,7 @@ BREVITY RULES (non-negotiable):
 - Salary figures must derive from BLS/Levels/scraped data provided.
 - SALARY PERCENTILES: When BLS P25 and P75 are provided (not '?'), copy them DIRECTLY into salaryIntelligence.p25 and .p75 — do NOT re-estimate. Set marketMin = BLS P10 if available, else p25 × 0.78. Set marketMax = BLS P90 if available, else p75 × 1.35. If location data is provided, apply that median as salaryIntelligence.median and shift all bands proportionally.
 - SALARY ANALYSIS FIELD: salaryIntelligence.analysis should be one plain-English sentence summarising the candidate's salary position, e.g. "Your target of $145k sits at the 68th percentile for this role in Seattle — above market median but well within range." Include the target dollar amount, percentile, and a qualitative take. Max 30 words.
+- EDGAR FINANCIALS: When EDGAR structured financials are present, use them as the primary source for financialStability scoring — they override inferred signals. Growing revenue + positive net income = 8–9. Growing revenue + net loss (pre-profit) = 5–6. Declining revenue + net loss = 3–4. Headcount shrinking 10–20% YoY = redFlag (watch); >20% = redFlag (critical). Headcount growing 20%+ = greenFlag. Always cite "SEC EDGAR 10-K" as sourceName for these bullets.
 - NICHE ROLE / NO DATA: If BLS median is 'not found' AND Levels.fyi salary data is absent, read the job posting responsibilities and requirements carefully to identify the closest standard occupation that has market data (e.g. "develops Python ETL pipelines" → "Data Engineer"; "manages livestock rotation protocols" → "Agricultural Manager"). Use that adjacent role's salary range as the benchmark. Set salaryIntelligence.dataNote to: "No direct market data for [original title] — benchmarked against [adjacent role] based on job responsibilities". Do NOT silently invent numbers without this note.
 
 RADAR SCORING RULES — each dimension is 1–10. Use these anchors strictly. Interpolate between them. Never default to 5 when data exists.
@@ -229,6 +232,23 @@ H-1B DOL verified salaries (real wages paid by company): ${scrapedData.bls?.hibD
 Location salary: ${scrapedData.bls?.locationData || 'not found'}
 Levels.fyi: ${scrapedData.levels?.targetRoleSalaries?.slice(0, 5).map(s => `${s.company} $${s.base?.toLocaleString()} base`).join(', ') || 'none found'}
 Comparable cos: ${scrapedData.levels?.comparableSalaries?.slice(0, 6).map(s => `${s.company} $${s.base?.toLocaleString()}`).join(', ') || 'none'}
+
+EDGAR STRUCTURED FINANCIALS (verified from SEC 10-K — use for financial stability scoring):
+${(() => {
+  const f = scrapedData.enrich?.companyFacts;
+  if (!f) return 'EDGAR lookup not run';
+  if (!f.isPublic) return 'Private company — no SEC filings';
+  const fmt = (n?: number) => n === undefined ? '?' : Math.abs(n) >= 1e9 ? `$${(n / 1e9).toFixed(1)}B` : Math.abs(n) >= 1e6 ? `$${(Math.round(n / 1e6))}M` : `$${n.toLocaleString()}`;
+  const trend = (curr?: number, prev?: number) => curr && prev ? (curr > prev ? ` ↑${Math.round((curr - prev) / prev * 100)}% YoY` : ` ↓${Math.round((prev - curr) / prev * 100)}% YoY`) : '';
+  return [
+    f.filingYear ? `Filing year: ${f.filingYear}` : '',
+    f.employeeCount ? `Employees: ${f.employeeCount.toLocaleString()}${trend(f.employeeCount, f.employeeCountPriorYear)}` : '',
+    f.revenue ? `Revenue: ${fmt(f.revenue)}${trend(f.revenue, f.revenuePriorYear)}` : '',
+    f.netIncome !== undefined ? `Net Income: ${fmt(f.netIncome)}${f.netIncome < 0 ? ' (NET LOSS)' : ' (profitable)'}` : '',
+    f.cashOnHand ? `Cash on hand: ${fmt(f.cashOnHand)}` : '',
+    f.longTermDebt ? `Long-term debt: ${fmt(f.longTermDebt)}` : '',
+  ].filter(Boolean).join('\n') || 'Public company — no financial facts extracted';
+})()}
 
 OFFER: ${request.offerText || 'NOT PROVIDED — negotiationPlaybook and offerAnalysis MUST be null. Do not generate them.'}
 
@@ -350,6 +370,7 @@ Return ONLY valid JSON, no markdown fences, no text outside the JSON object:
             bls: scrapedData.bls,
             sec: scrapedData.sec,
             jobPosting: scrapedData.jobPosting,
+            enrichment: scrapedData.enrich,
           },
         };
 
