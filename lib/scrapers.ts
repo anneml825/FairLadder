@@ -1,6 +1,5 @@
 import axios from 'axios';
 import * as cheerio from 'cheerio';
-import { cacheLife } from 'next/cache';
 import {
   GoogleNewsResult,
   RedditThread,
@@ -11,6 +10,7 @@ import {
   JobPostingData,
   ScrapedSource,
 } from './types';
+import { getCachedQuery, setCachedQuery } from './cache';
 
 const HEADERS = {
   'User-Agent':
@@ -24,10 +24,14 @@ const HEADERS = {
 // Primary search API — 2,500 free searches, no credit card needed.
 
 async function searchSerper(query: string, num = 10): Promise<SerpResult[]> {
-  'use cache';
-  cacheLife('days'); // cache each unique query for 24h — saves Serper quota on repeat analyses
   const key = process.env.SERPER_API_KEY;
   if (!key) return [];
+
+  // Check Supabase cache first — saves Serper quota on repeat queries
+  const cacheKey = `${query}|n=${num}`;
+  const cached = await getCachedQuery(cacheKey);
+  if (cached) return cached;
+
   try {
     const res = await axios.post(
       'https://google.serper.dev/search',
@@ -35,9 +39,14 @@ async function searchSerper(query: string, num = 10): Promise<SerpResult[]> {
       { headers: { 'X-API-KEY': key, 'Content-Type': 'application/json' }, timeout: 12000 },
     );
     const results: Array<{ title?: string; link?: string; snippet?: string }> = res.data?.organic ?? [];
-    return results
+    const mapped = results
       .filter(r => r.link && r.title)
       .map(r => ({ title: r.title ?? '', link: r.link ?? '', snippet: r.snippet ?? '' }));
+
+    // Persist to cache asynchronously — don't await so it doesn't slow the response
+    void setCachedQuery(cacheKey, mapped);
+
+    return mapped;
   } catch (e: unknown) {
     console.error('Serper error:', (e as { message: string }).message);
     return [];
