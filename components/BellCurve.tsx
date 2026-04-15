@@ -21,7 +21,7 @@ function generateBellCurve(min: number, max: number, median: number, points = 10
 }
 
 export default function BellCurve({ data }: Props) {
-  const { marketMin, marketMax, median, p25, p75, offerValue, percentile, verdict, targetSalary, dataNote } = data;
+  const { marketMin, marketMax, median, p25, p75, offerValue, percentile, verdict, targetSalary, dataNote, analysis } = data;
 
   const chartData = generateBellCurve(marketMin, marketMax, median);
 
@@ -139,6 +139,11 @@ export default function BellCurve({ data }: Props) {
         <span className="font-mono font-bold text-sm text-white">{fmt(targetSalary)}</span>
         <span className={`text-xs font-bold ${vc.text}`}>{percentile}th percentile</span>
       </div>
+
+      {/* Claude's one-line salary take */}
+      {analysis && analysis !== 'null' && (
+        <p className="mt-3 text-xs text-[#8892a4] leading-relaxed border-t border-[#1e2736] pt-3">{analysis}</p>
+      )}
     </div>
   );
 }

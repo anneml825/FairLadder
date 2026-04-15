@@ -21,6 +21,27 @@ function renderMd(text: string) {
   );
 }
 
+function renderOfferAnalysis(text: string) {
+  if (!text) return null;
+  const lines = text.split('\n').filter(l => l.trim());
+  return (
+    <div className="space-y-2">
+      {lines.map((line, i) => {
+        const isBullet = /^[•\-\*]\s/.test(line.trim());
+        const content = isBullet ? line.trim().replace(/^[•\-\*]\s+/, '') : line;
+        return isBullet ? (
+          <div key={i} className="flex gap-2.5 items-start">
+            <span className="text-indigo-400 mt-0.5 shrink-0 select-none">•</span>
+            <p className="text-sm text-[#c8d0e0] leading-relaxed">{renderMd(content)}</p>
+          </div>
+        ) : (
+          <p key={i} className="text-sm text-[#c8d0e0] leading-relaxed">{renderMd(line)}</p>
+        );
+      })}
+    </div>
+  );
+}
+
 // Normalise: Claude may return bullets as an array or (legacy) a plain string
 function normalizeBullets(raw: IntelligenceBullet[] | string | undefined): IntelligenceBullet[] {
   if (!raw) return [];
@@ -240,6 +261,35 @@ export default function ResultsPage() {
         {activeTab === 'overview' && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <RadarChart scores={result.radarScores} />
+
+            {/* Language warning chips — red/yellow only, with link to full Role tab */}
+            {result.languageWarnings?.some(w => w.severity === 'red' || w.severity === 'yellow') && (
+              <div className="glass rounded-2xl p-4 border border-[#1e2736]">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-white uppercase tracking-wide">Posting Language</h3>
+                  <button onClick={() => setActiveTab('role')} className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors">
+                    See full analysis →
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {result.languageWarnings
+                    .filter(w => w.severity === 'red' || w.severity === 'yellow')
+                    .map((w, i) => (
+                      <span
+                        key={i}
+                        className={`px-2.5 py-1 rounded-full border text-xs font-medium ${
+                          w.severity === 'red'
+                            ? 'bg-red-500/15 border-red-500/40 text-red-300'
+                            : 'bg-amber-500/15 border-amber-500/40 text-amber-300'
+                        }`}
+                      >
+                        &ldquo;{w.phrase}&rdquo;
+                      </span>
+                    ))}
+                </div>
+              </div>
+            )}
+
             <div className="lg:col-span-2">
               <Timeline events={result.timeline || []} />
             </div>
@@ -411,7 +461,7 @@ export default function ResultsPage() {
             {/* Levels.fyi data */}
             {result.rawData?.levels && result.rawData.levels.targetRoleSalaries.length > 0 && (
               <div className="glass rounded-2xl p-6 border border-[#1e2736]">
-                <h3 className="text-sm font-semibold text-white uppercase tracking-wide mb-4">Levels.fyi Data</h3>
+                <h3 className="text-sm font-semibold text-white uppercase tracking-wide mb-4">Market Salary Data</h3>
                 <div className="space-y-2">
                   {result.rawData.levels.targetRoleSalaries.map((salary, i) => (
                     <div key={i} className="p-3 rounded-xl bg-purple-500/5 border border-purple-500/15">
@@ -446,7 +496,7 @@ export default function ResultsPage() {
             {result.offerAnalysis && (
               <div className="mt-6 glass rounded-2xl p-6 border border-[#1e2736]">
                 <h3 className="text-sm font-semibold text-white uppercase tracking-wide mb-4">Offer Analysis</h3>
-                <p className="text-sm text-[#c8d0e0] leading-relaxed whitespace-pre-wrap">{renderMd(result.offerAnalysis)}</p>
+                {renderOfferAnalysis(result.offerAnalysis)}
               </div>
             )}
           </div>

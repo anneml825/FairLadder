@@ -33,6 +33,29 @@ export default function HomePage() {
     setCharCount(form.jobText.length);
   }, [form.jobText]);
 
+  const normalizeLocation = (input: string): string => {
+    const map: Record<string, string> = {
+      'sf': 'San Francisco, CA', 'bay area': 'San Francisco, CA',
+      'nyc': 'New York, NY', 'ny': 'New York, NY', 'new york': 'New York, NY',
+      'la': 'Los Angeles, CA', 'los angeles': 'Los Angeles, CA',
+      'dc': 'Washington, DC', 'washington dc': 'Washington, DC',
+      'chi': 'Chicago, IL', 'chicago': 'Chicago, IL',
+      'bos': 'Boston, MA',
+      'sea': 'Seattle, WA',
+      'atl': 'Atlanta, GA',
+      'aus': 'Austin, TX',
+      'den': 'Denver, CO',
+      'phx': 'Phoenix, AZ',
+      'mia': 'Miami, FL',
+      'pdx': 'Portland, OR',
+      'slc': 'Salt Lake City, UT',
+      'rdu': 'Raleigh, NC',
+      'min': 'Minneapolis, MN',
+    };
+    const key = input.trim().toLowerCase();
+    return map[key] ?? input;
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
@@ -43,6 +66,12 @@ export default function HomePage() {
     if (tab === 'url' && !form.jobUrl.trim()) { setError('Job posting URL is required'); return; }
     if (tab === 'paste' && !form.jobText.trim()) { setError('Job posting text is required'); return; }
 
+    // Guard against accidentally entered shorthand (e.g. "120" meaning $120k)
+    const rawMin = parseInt(form.desiredSalaryMin.replace(/[^0-9]/g, '') || '0');
+    const rawMax = parseInt(form.desiredSalaryMax.replace(/[^0-9]/g, '') || '0');
+    if (rawMin > 0 && rawMin < 1000) { setError('Salary looks too low — enter the full amount, e.g. 85000 for $85k'); return; }
+    if (rawMax > 0 && rawMax < 1000) { setError('Salary looks too low — enter the full amount, e.g. 150000 for $150k'); return; }
+
     setLoading(true);
 
     const toNum = (s: string) => { const n = parseInt(s.replace(/[^0-9]/g, '')); return isNaN(n) ? undefined : n; };
@@ -51,7 +80,7 @@ export default function HomePage() {
       jobUrl: tab === 'url' ? form.jobUrl : undefined,
       jobText: tab === 'paste' ? form.jobText : undefined,
       companyName: form.companyName,
-      location: form.location,
+      location: normalizeLocation(form.location),
       postedSalaryMin: toNum(form.postedSalaryMin),
       postedSalaryMax: toNum(form.postedSalaryMax),
       desiredSalaryMin: toNum(form.desiredSalaryMin)!,

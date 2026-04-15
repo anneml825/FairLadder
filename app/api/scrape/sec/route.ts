@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { scrapeSEC } from '@/lib/scrapers';
 
 export const runtime = 'nodejs';
-export const maxDuration = 25;
+export const maxDuration = 45;
 
 export async function POST(req: NextRequest) {
   const { companyName, companyContext } = await req.json();

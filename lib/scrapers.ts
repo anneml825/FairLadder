@@ -192,12 +192,14 @@ function extractRedditThreads(
 async function fetchRedditSearch(
   query: string,
   subreddit?: string,
+  sort: 'relevance' | 'top' = 'relevance',
+  t: 'year' | 'all' = 'year',
 ): Promise<Array<{ title: string; url: string; subreddit: string; score: number; num_comments: number; selftext: string }>> {
   try {
     const base = subreddit
       ? `https://www.reddit.com/r/${subreddit}/search.json`
       : `https://www.reddit.com/search.json`;
-    const params = new URLSearchParams({ q: query, sort: 'relevance', t: 'year', limit: '10', ...(subreddit ? { restrict_sr: '1' } : {}) });
+    const params = new URLSearchParams({ q: query, sort, t, limit: '10', ...(subreddit ? { restrict_sr: '1' } : {}) });
     const res = await axios.get(`${base}?${params}`, {
       headers: { 'User-Agent': REDDIT_UA, Accept: 'application/json' },
       timeout: 10000,
@@ -298,6 +300,8 @@ export async function scrapeReddit(
     const allNative = await Promise.all([
       ...nativeQueries.map(q => fetchRedditSearch(q)),
       ...subreddits.map(sub => fetchRedditSearch(`"${companyName}"`, sub)),
+      // Top-sorted all-time pass — catches high-value older posts not surfaced by recency
+      ...nativeQueries.slice(0, 2).map(q => fetchRedditSearch(q, undefined, 'top', 'all')),
     ]);
     allNative.flat().forEach(addPost);
   }
@@ -1177,9 +1181,6 @@ export async function scrapeBLS(
   return { data, sources };
 }
 
-function extractSalariesFromText(text: string): number[] {
-  return extractSalaries(text);
-}
 
 // ── H-1B SALARY DISCLOSURE (DOL public LCA data via h1bdata.info) ─────────
 // The Department of Labor publishes every H-1B Labor Condition Application —

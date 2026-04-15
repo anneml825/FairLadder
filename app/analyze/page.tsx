@@ -114,8 +114,6 @@ export default function AnalyzePage() {
     if (!stored) { router.replace('/'); return; }
 
     const request: AnalysisRequest = JSON.parse(stored);
-    // Remove the request immediately so a stale back-navigate can't re-trigger the analysis
-    sessionStorage.removeItem('fairladder_request');
 
     abortRef.current = new AbortController();
     const signal = abortRef.current.signal;
@@ -324,6 +322,8 @@ export default function AnalyzePage() {
               } else if (data.type === 'result') {
                 setStep('claude', { status: 'done', count: 1 });
                 sessionStorage.setItem('fairladder_result', JSON.stringify(data.data));
+                // Remove request only after result is safely saved — prevents losing state if user navigates away mid-analysis
+                sessionStorage.removeItem('fairladder_request');
                 router.replace('/results');
               } else if (data.type === 'error') {
                 setStep('claude', { status: 'error', error: data.message });

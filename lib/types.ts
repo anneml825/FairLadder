@@ -159,6 +159,8 @@ export interface SalaryIntelligence {
   targetSalary: number;
   /** Set when using an adjacent/comparable role instead of direct market data */
   dataNote?: string;
+  /** One-sentence Claude summary of this salary position, e.g. "Your target is 12% above market median for this role in Seattle." */
+  analysis?: string;
 }
 
 export interface RoleScorecardRow {
