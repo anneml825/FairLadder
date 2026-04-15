@@ -113,7 +113,7 @@ BREVITY RULES (non-negotiable):
 - sourceName: short label like "Glassdoor", "Reddit", "SEC 8-K", "WARN Act", "layoffs.fyi", "Google News", "Levels.fyi", "BLS". Empty string if no source.
 - NEVER write "cannot confirm", "not available", "no data found", "unable to verify", "not published". If data is absent, omit the point entirely — don't mention it.
 - offerAnalysis: one bullet per offer term, one sentence each.
-- dataGaps: short array of what key data was missing (e.g. ["CEO approval", "Reddit: 0 threads", "salary range not listed"]). 5 words max per item. Empty array if nothing missing.
+- dataGaps: only include gaps that are themselves a RED FLAG or meaningful signal — e.g. ["No Glassdoor reviews (suppressed?)", "Zero public financials", "No press coverage found", "Salary range not listed"]. Skip trivial gaps like 'CEO approval not found' or 'H-1B data absent'. Empty array [] if no meaningful gaps. 8 words max per item.
 - Timeline sourceUrl: copy exact URL from [URL:...] tags in the news data. Empty string "" if no match.
 - roleScorecard "Posting Age Signal": if postedDate provided, calculate days since posted and flag if >45 days. If no date, analyze company hiring velocity from signals. NEVER just say "no date provided."
 - Salary figures must derive from BLS/Levels/scraped data provided.

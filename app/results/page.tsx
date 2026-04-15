@@ -255,7 +255,19 @@ export default function ResultsPage() {
               <h3 className="text-sm font-semibold text-white uppercase tracking-wide mb-4">Company Intelligence</h3>
               <BulletList bullets={normalizeBullets(result.companyIntelligence)} />
 
-              {/* dataGaps intentionally not shown to end users */}
+              {/* dataGaps — only shown when Claude flags them as meaningful signals, not routine absences */}
+              {result.dataGaps && result.dataGaps.length > 0 && (
+                <div className="mt-4 pt-3 border-t border-[#1e2736]">
+                  <div className="text-[10px] text-amber-400/70 uppercase tracking-wide mb-2 font-medium">⚠ Notable gaps</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {result.dataGaps.map((gap, i) => (
+                      <span key={i} className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-300/80 border border-amber-500/20">
+                        {gap}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* Glassdoor snapshot */}
               {result.rawData?.glassdoor && (
