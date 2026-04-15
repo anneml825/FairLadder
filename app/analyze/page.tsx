@@ -42,8 +42,8 @@ const INITIAL_STEPS: Step[] = [
   { id: 'news',     label: 'Scanning company news & press releases',   icon: '📰', status: 'pending', count: 0 },
   { id: 'reddit',   label: 'Reading Reddit employee threads',          icon: '🗣️', status: 'pending', count: 0 },
   { id: 'glassdoor',label: 'Checking Glassdoor, Comparably, Indeed & Blind', icon: '⭐', status: 'pending', count: 0 },
-  { id: 'levels',   label: 'Researching salary benchmarks',                  icon: '💰', status: 'pending', count: 0 },
-  { id: 'bls',      label: 'Pulling BLS, Salary.com, Payscale & H-1B data', icon: '📊', status: 'pending', count: 0 },
+  { id: 'levels',   label: 'Levels.fyi & comparable company salaries',        icon: '💰', status: 'pending', count: 0 },
+  { id: 'bls',      label: 'BLS, ZipRecruiter, Payscale & H-1B DOL data',   icon: '📊', status: 'pending', count: 0 },
   { id: 'sec',      label: 'SEC, WARN Act, Crunchbase & LinkedIn signals',   icon: '📋', status: 'pending', count: 0 },
   { id: 'claude',   label: 'Running intelligence analysis',            icon: '🤖', status: 'pending', count: 0 },
 ];
@@ -245,7 +245,7 @@ export default function AnalyzePage() {
       } else setStep('levels', { status: 'done', count: 0 });
 
       if (blsRes) {
-        setStep('bls', { status: 'done', count: 1 });
+        setStep('bls', { status: 'done', count: blsRes.sources.length });
         addSources(blsRes.sources.length);
       } else setStep('bls', { status: 'done', count: 0 });
 
