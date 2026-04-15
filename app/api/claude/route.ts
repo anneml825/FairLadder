@@ -113,8 +113,60 @@ BREVITY RULES (non-negotiable):
 - dataGaps: short array of what key data was missing (e.g. ["CEO approval", "Reddit: 0 threads", "salary range not listed"]). 5 words max per item. Empty array if nothing missing.
 - Timeline sourceUrl: copy exact URL from [URL:...] tags in the news data. Empty string "" if no match.
 - roleScorecard "Posting Age Signal": if postedDate provided, calculate days since posted and flag if >45 days. If no date, analyze company hiring velocity from signals. NEVER just say "no date provided."
-- Radar scores must reflect data: low Glassdoor = low culture, layoff signals = low financial stability. Do not default to 5.
-- Salary figures must derive from BLS/Levels/scraped data provided.`;
+- Salary figures must derive from BLS/Levels/scraped data provided.
+
+RADAR SCORING RULES — each dimension is 1–10. Use these anchors strictly. Interpolate between them. Never default to 5 when data exists.
+
+When data is missing for a dimension, use the no-data default listed — never invent a neutral 5.
+
+CULTURE (primary: Glassdoor rating + recommend%; secondary: Blind rating, review cons tone):
+• 8–10: Glassdoor ≥4.2 AND recommend% ≥75% AND cons are minor complaints only
+• 6–7: Glassdoor 3.8–4.1 OR recommend% 65–74% OR mixed cons without dominant themes
+• 4–5: Glassdoor 3.3–3.7 OR recommend% 50–64% OR cons dominated by management/pay complaints
+• 2–3: Glassdoor <3.3 OR recommend% <50% OR Blind posts heavily negative
+• 1: Glassdoor <2.8, or reviews cite toxic culture, retaliation, or discrimination at scale
+• NO DATA: score 4 — penalize for opacity; note "Culture: no reviews found" in dataGaps
+Blind posts override Glassdoor if they strongly contradict it (more recent, more candid).
+
+FINANCIAL STABILITY (primary: WARN Act, layoffs.fyi, SEC filings; secondary: funding recency, news):
+• 9–10: Public company profitable + growing revenue, or late-stage private (Series D+) raised <18mo
+• 7–8: Series B/C raised <24mo, no layoff signals, revenue-positive mentions in press
+• 5–6: Series A or early B, runway unclear, no WARN or layoff news, limited financial data
+• 3–4: Any one of: WARN Act hit, layoffs.fyi listing, RIF in news, SEC going-concern note, down-round
+• 1–2: Multiple layoff rounds in 12mo, bankruptcy filing, hiring freeze post-cuts, SEC distress language
+• NO DATA (no SEC, no funding, no news): score 4 — unknown financial state; add "Financial data: none" to dataGaps
+
+LEADERSHIP (primary: CEO approval%; secondary: exec departures from SEC 8-Ks, founder vs installed):
+• 8–10: CEO approval ≥75% AND no C-suite exits in 12mo AND founder still running company
+• 6–7: CEO approval 60–74% OR one exec departure with clear successor named
+• 4–5: CEO approval 45–59% OR 2+ exec departures OR unexplained recent CEO change
+• 2–3: CEO approval <45% OR CFO/CTO exit during financial stress period
+• 1: CEO approval <30%, or 3+ C-suite exits in 6mo, or activist investor/board pressure reported
+• NO DATA (no CEO approval, no departure signals): score 5 — truly neutral; note "CEO approval: not found"
+
+GROWTH TRAJECTORY (primary: funding recency, headcount trend; secondary: product expansion news):
+• 8–10: Funding in last 12mo + headcount growing (LinkedIn signals) + new product/market expansion
+• 6–7: Funding within 24mo, headcount stable, market growing
+• 4–5: No funding news in 2–3 years, headcount flat, mature/competitive market
+• 2–3: Headcount shrinking, no new funding in 3+ years, market contracting or commoditizing
+• 1: Company actively shrinking, pivoting away from core product, or showing M&A distress signals
+• NO DATA: score 4 for pre-revenue startup (high risk), score 5 for established private company with no signals
+
+RETENTION (primary: recommend%; secondary: Reddit "I left" signals, same-role reposting patterns):
+• 8–10: Recommend% ≥80% AND Reddit sentiment positive AND reviews mention long tenure
+• 6–7: Recommend% 65–79% OR Reddit neutral OR reviews mention decent-length tenure
+• 4–5: Recommend% 50–64% OR Reddit has "left after X months" threads OR some reposting
+• 2–3: Recommend% <50% OR repeated postings for same role OR Reddit exodus/churn mentions
+• 1: "Everyone is leaving" language, same role reposted 3+ times in 6mo, mass departures noted
+• NO DATA: score 4 — penalize for no review signal; add "Retention: no data" to dataGaps
+
+TRANSPARENCY (primary: public data richness — how much verifiable info exists across all scrapers):
+• 8–10: SEC filer with regular disclosures + active press + Glassdoor employer responses present
+• 6–7: Private but well-covered by press, Crunchbase/Pitchbook populated, some Glassdoor responses
+• 4–5: Limited press, no SEC, Crunchbase sparse — typical for early-stage; not a red flag alone
+• 2–3: Minimal verifiable data despite being established (5+ years old), scrubbed reviews, no financials
+• 1: Effectively a black box — no press, no reviews, no filings, no verifiable headcount or funding
+• NO DATA rule: transparency is self-revealing — a company with no data scores 2–3 by definition`;
 
   const userPrompt = `Analyze this job opportunity. Be specific. Use real numbers. Never write "data unavailable" — always reason from available signals.
 
