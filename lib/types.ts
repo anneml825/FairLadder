@@ -10,8 +10,18 @@ export interface CompanyFactsData {
   filingYear?: string;
 }
 
+export interface CourtCase {
+  title: string;
+  court: string;
+  dateFiled: string;
+  caseType: 'employment' | 'wage' | 'discrimination' | 'securities' | 'other';
+  url: string;
+  snippet?: string;
+}
+
 export interface EnrichmentData {
   companyFacts?: CompanyFactsData;
+  courtCases?: CourtCase[];
 }
 
 export interface AnalysisRequest {

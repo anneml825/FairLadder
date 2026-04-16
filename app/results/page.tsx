@@ -375,6 +375,45 @@ export default function ResultsPage() {
                 );
               })()}
 
+              {/* Federal court cases */}
+              {result.rawData?.enrichment?.courtCases && result.rawData.enrichment.courtCases.length > 0 && (
+                <div className="mt-4 pt-4 border-t border-[#1e2736]">
+                  <div className="text-xs text-[#8892a4] uppercase tracking-wide mb-3 font-medium">Federal Court Cases</div>
+                  <div className="space-y-2">
+                    {result.rawData.enrichment.courtCases.map((c, i) => {
+                      const typeColor =
+                        c.caseType === 'discrimination' ? 'text-red-400 bg-red-500/10 border-red-500/20' :
+                        c.caseType === 'wage' ? 'text-amber-400 bg-amber-500/10 border-amber-500/20' :
+                        c.caseType === 'securities' ? 'text-purple-400 bg-purple-500/10 border-purple-500/20' :
+                        'text-[#8892a4] bg-[#1e2736] border-[#2a3448]';
+                      return (
+                        <div key={i} className="p-3 rounded-xl bg-[#0d1117]/50 border border-[#1e2736] hover:border-[#2a3448] transition-colors">
+                          <div className="flex items-start gap-2 mb-1">
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded border flex-shrink-0 font-medium ${typeColor}`}>
+                              {c.caseType}
+                            </span>
+                            <span className="text-[10px] text-[#4a5568] flex-shrink-0">{c.dateFiled}</span>
+                            {c.court && <span className="text-[10px] text-[#4a5568]">· {c.court}</span>}
+                          </div>
+                          {c.url ? (
+                            <a href={c.url} target="_blank" rel="noopener noreferrer"
+                              className="text-xs text-[#c8d0e0] hover:text-indigo-300 transition-colors block leading-snug">
+                              {c.title}
+                            </a>
+                          ) : (
+                            <p className="text-xs text-[#c8d0e0] leading-snug">{c.title}</p>
+                          )}
+                          {c.snippet && (
+                            <p className="text-[11px] text-[#4a5568] mt-1 italic line-clamp-2">{c.snippet}</p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <p className="text-[10px] text-[#4a5568] mt-2">Source: CourtListener federal court records</p>
+                </div>
+              )}
+
               {/* Glassdoor snapshot */}
               {result.rawData?.glassdoor && (
                 <div className="mt-4 pt-4 border-t border-[#1e2736]">

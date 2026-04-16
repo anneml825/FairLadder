@@ -122,6 +122,7 @@ BREVITY RULES (non-negotiable):
 - SALARY PERCENTILES: When BLS P25 and P75 are provided (not '?'), copy them DIRECTLY into salaryIntelligence.p25 and .p75 — do NOT re-estimate. Set marketMin = BLS P10 if available, else p25 × 0.78. Set marketMax = BLS P90 if available, else p75 × 1.35. If location data is provided, apply that median as salaryIntelligence.median and shift all bands proportionally.
 - SALARY ANALYSIS FIELD: salaryIntelligence.analysis should be one plain-English sentence summarising the candidate's salary position, e.g. "Your target of $145k sits at the 68th percentile for this role in Seattle — above market median but well within range." Include the target dollar amount, percentile, and a qualitative take. Max 30 words.
 - EDGAR FINANCIALS: When EDGAR structured financials are present, use them as the primary source for financialStability scoring — they override inferred signals. Growing revenue + positive net income = 8–9. Growing revenue + net loss (pre-profit) = 5–6. Declining revenue + net loss = 3–4. Headcount shrinking 10–20% YoY = redFlag (watch); >20% = redFlag (critical). Headcount growing 20%+ = greenFlag. Always cite "SEC EDGAR 10-K" as sourceName for these bullets.
+- COURT CASES: Federal employment/wage cases are concrete red flags. 1 recent case = watch; 2+ cases or any class action = critical. Flag them in redFlags with title, date, and one-sentence impact. Cite "CourtListener" as sourceName. Securities fraud cases lower financialStability by 1–2 points.
 - NICHE ROLE / NO DATA: If BLS median is 'not found' AND Levels.fyi salary data is absent, read the job posting responsibilities and requirements carefully to identify the closest standard occupation that has market data (e.g. "develops Python ETL pipelines" → "Data Engineer"; "manages livestock rotation protocols" → "Agricultural Manager"). Use that adjacent role's salary range as the benchmark. Set salaryIntelligence.dataNote to: "No direct market data for [original title] — benchmarked against [adjacent role] based on job responsibilities". Do NOT silently invent numbers without this note.
 
 RADAR SCORING RULES — each dimension is 1–10. Use these anchors strictly. Interpolate between them. Never default to 5 when data exists.
@@ -248,6 +249,15 @@ ${(() => {
     f.cashOnHand ? `Cash on hand: ${fmt(f.cashOnHand)}` : '',
     f.longTermDebt ? `Long-term debt: ${fmt(f.longTermDebt)}` : '',
   ].filter(Boolean).join('\n') || 'Public company — no financial facts extracted';
+})()}
+
+FEDERAL COURT CASES (CourtListener — past 5 years):
+${(() => {
+  const cases = scrapedData.enrich?.courtCases;
+  if (!cases?.length) return 'None found (CourtListener token absent or no cases matched)';
+  return cases.map(c =>
+    `[${c.dateFiled}] ${c.title} — Court: ${c.court} | Type: ${c.caseType}${c.snippet ? ` | "${c.snippet}"` : ''} [URL:${c.url}]`
+  ).join('\n');
 })()}
 
 OFFER: ${request.offerText || 'NOT PROVIDED — negotiationPlaybook and offerAnalysis MUST be null. Do not generate them.'}

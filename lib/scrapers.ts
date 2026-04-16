@@ -10,6 +10,7 @@ import {
   JobPostingData,
   ScrapedSource,
   CompanyFactsData,
+  CourtCase,
   EnrichmentData,
 } from './types';
 import { getCachedQuery, setCachedQuery } from './cache';
@@ -1886,16 +1887,85 @@ async function fetchEdgarFacts(companyName: string): Promise<CompanyFactsData | 
   }
 }
 
+// ─── COURTLISTENER ────────────────────────────────────────────────────────────
+// Searches federal court records for employment/wage cases. Requires
+// COURTLISTENER_TOKEN env var (free at courtlistener.com). Skips gracefully
+// if token is absent.
+
+async function fetchCourtListener(companyName: string): Promise<CourtCase[]> {
+  const token = process.env.COURTLISTENER_TOKEN;
+  if (!token) return [];
+
+  type CLResult = {
+    caseName?: string;
+    court_id?: string;
+    dateFiled?: string;
+    absolute_url?: string;
+    snippet?: string;
+  };
+
+  const queries = [
+    `"${companyName}" employment discrimination retaliation`,
+    `"${companyName}" wage overtime FLSA class action`,
+  ];
+
+  const batches = await Promise.all(
+    queries.map(q =>
+      axios
+        .get('https://www.courtlistener.com/api/rest/v4/search/', {
+          params: { q, type: 'r', filed_after: '2019-01-01', order_by: 'score desc', page_size: 5 },
+          headers: { Authorization: `Token ${token}`, Accept: 'application/json' },
+          timeout: 8000,
+        })
+        .then(r => (r.data?.results ?? []) as CLResult[])
+        .catch(() => [] as CLResult[]),
+    ),
+  );
+
+  const seen = new Set<string>();
+  const cases: CourtCase[] = [];
+
+  for (const batch of batches) {
+    for (const r of batch) {
+      const title = r.caseName ?? '';
+      if (!title || seen.has(title)) continue;
+      seen.add(title);
+
+      const combined = (title + (r.snippet ?? '')).toLowerCase();
+      const caseType: CourtCase['caseType'] =
+        /discriminat|harass|retaliat/.test(combined) ? 'discrimination' :
+        /wage|overtime|flsa|unpaid/.test(combined) ? 'wage' :
+        /securit|fraud|insider/.test(combined) ? 'securities' :
+        'employment';
+
+      cases.push({
+        title,
+        court: r.court_id ?? '',
+        dateFiled: r.dateFiled?.slice(0, 10) ?? '',
+        caseType,
+        url: r.absolute_url ? `https://www.courtlistener.com${r.absolute_url}` : '',
+        snippet: r.snippet?.slice(0, 150),
+      });
+    }
+  }
+
+  return cases.slice(0, 8);
+}
+
 // ─── ENRICHMENT ───────────────────────────────────────────────────────────────
-// Aggregates all free-API enrichment data. Currently: EDGAR financials.
-// CourtListener, GitHub, NLRB, OSHA will be added in subsequent sessions.
+// Aggregates free-API enrichment. Currently: EDGAR financials + CourtListener.
+// GitHub, NLRB, OSHA will be added in subsequent sessions.
 
 export async function scrapeEnrichment(
   companyName: string,
 ): Promise<{ data: EnrichmentData; sources: ScrapedSource[] }> {
   const sources: ScrapedSource[] = [];
 
-  const companyFacts = await fetchEdgarFacts(companyName);
+  // Both run in parallel — neither depends on the other
+  const [companyFacts, courtCases] = await Promise.all([
+    fetchEdgarFacts(companyName),
+    fetchCourtListener(companyName),
+  ]);
 
   if (companyFacts?.isPublic) {
     sources.push({
@@ -1906,8 +1976,22 @@ export async function scrapeEnrichment(
     });
   }
 
+  for (const c of courtCases) {
+    if (c.url) {
+      sources.push({
+        url: c.url,
+        type: 'sec',
+        title: c.title.slice(0, 120),
+        timestamp: c.dateFiled || new Date().toISOString(),
+      });
+    }
+  }
+
   return {
-    data: { companyFacts: companyFacts ?? undefined },
+    data: {
+      companyFacts: companyFacts ?? undefined,
+      courtCases: courtCases.length > 0 ? courtCases : undefined,
+    },
     sources,
   };
 }
