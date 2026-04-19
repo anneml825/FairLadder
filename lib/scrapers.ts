@@ -1090,27 +1090,73 @@ function getPercentileFactors(role: string): { p10: number; p25: number; p75: nu
 // Direct BLS OES page mapping — prevents misclassification of creative/niche roles.
 // Without this, "Senior Copywriter" matches "Advertising Managers" ($154k) instead of
 // "Writers and Authors" ($73k) because both appear in BLS search results.
+// Comprehensive role → BLS OES code map. Covers all major professional categories so
+// virtually no common role falls to the untrusted web-search fallback.
+// Order matters: more-specific patterns before more-generic ones.
 const BLS_DIRECT_MAP: Array<{ test: RegExp; code: string; title: string }> = [
-  { test: /copywriter|copy writer|content writer/i, code: '273043', title: 'Writers and Authors' },
-  { test: /technical writer|documentation/i, code: '273042', title: 'Technical Writers' },
-  { test: /\beditor\b|copy editor|managing editor|editorial/i, code: '273041', title: 'Editors' },
-  { test: /public relations specialist|pr specialist|communications specialist/i, code: '273031', title: 'Public Relations Specialists' },
-  // UX/UI/Product design — must come before generic "graphic designer" entry
-  { test: /\bux\b|\bui\b.*design|design.*\bui\b|user experience|product designer|ux researcher|ux lead|head of ux|vp.*ux|ux.*director|interaction designer/i, code: '151254', title: 'Web and Digital Interface Designers' },
-  { test: /graphic designer|visual designer/i, code: '271024', title: 'Graphic Designers' },
-  { test: /art director/i, code: '271011', title: 'Art Directors' },
-  { test: /photographer/i, code: '274021', title: 'Photographers' },
+  // ── Engineering & Technology ───────────────────────────────────────────────
+  { test: /machine learning|ml engineer|\bai engineer|\bllm\b|nlp engineer|deep learning/i, code: '151221', title: 'Computer and Information Research Scientists' },
+  { test: /security engineer|cybersecurity|infosec|penetration test|appsec|soc analyst/i, code: '151212', title: 'Information Security Analysts' },
+  { test: /devops|site reliability|\bsre\b|platform engineer|infrastructure engineer/i, code: '151244', title: 'Network and Computer Systems Administrators' },
+  { test: /cloud architect|solutions architect|enterprise architect/i, code: '151243', title: 'Network Architects' },
+  { test: /data engineer|etl engineer|analytics engineer|\bpipeline engineer/i, code: '151242', title: 'Database Administrators and Architects' },
+  { test: /database admin|dba\b/i, code: '151242', title: 'Database Administrators and Architects' },
+  { test: /mobile developer|ios developer|android developer|react native/i, code: '151252', title: 'Software Developers' },
+  { test: /software engineer|software developer|backend engineer|frontend engineer|full.?stack/i, code: '151252', title: 'Software Developers' },
+  { test: /qa engineer|quality assurance|test engineer|sdet\b/i, code: '151253', title: 'Software Quality Assurance Analysts and Testers' },
   { test: /data scientist/i, code: '152098', title: 'Data Scientists' },
-  { test: /data analyst|business analyst/i, code: '152041', title: 'Business Intelligence Analysts' },
-  { test: /data engineer|etl|pipeline/i, code: '151242', title: 'Database Administrators and Architects' },
-  { test: /software engineer|software developer|backend|frontend|full.?stack/i, code: '151252', title: 'Software Developers' },
-  { test: /product manager|head of product|vp.*product|chief product/i, code: '119199', title: 'Business Operations Specialists' },
-  { test: /accountant|accounting/i, code: '132011', title: 'Accountants and Auditors' },
-  { test: /financial analyst/i, code: '132051', title: 'Financial and Investment Analysts' },
-  { test: /sales trader|securities trader|\btrader\b.*crypto|\btrader\b.*equities|\btrader\b.*fx/i, code: '132099', title: 'Financial Specialists (Securities Traders)' },
+  { test: /data analyst|business intelligence analyst|bi analyst|bi developer/i, code: '152041', title: 'Business Intelligence Analysts' },
+  // ── Design & UX ────────────────────────────────────────────────────────────
+  { test: /\bux\b|\bui\b.*design|design.*\bui\b|user experience|product designer|ux researcher|ux lead|head of ux|ux director|interaction designer/i, code: '151254', title: 'Web and Digital Interface Designers' },
+  { test: /web designer|digital designer/i, code: '151254', title: 'Web and Digital Interface Designers' },
+  { test: /creative director|art director/i, code: '271011', title: 'Art Directors' },
+  { test: /graphic designer|visual designer|brand designer/i, code: '271024', title: 'Graphic Designers' },
+  { test: /video producer|video editor|motion graphics|animator/i, code: '274031', title: 'Film and Video Editors and Camera Operators' },
+  { test: /photographer/i, code: '274021', title: 'Photographers' },
+  // ── Product & Program Management ───────────────────────────────────────────
+  { test: /product manager|head of product|vp.*product|chief product|director.*product/i, code: '119021', title: 'Computer and Information Systems Managers' },
+  { test: /technical program manager|technical project manager/i, code: '119021', title: 'Computer and Information Systems Managers' },
+  { test: /program manager|project manager/i, code: '119199', title: 'Business Operations Specialists' },
+  // ── Finance & Accounting ───────────────────────────────────────────────────
+  { test: /investment banker|banking analyst|banking associate|m&a analyst/i, code: '132051', title: 'Financial and Investment Analysts' },
+  { test: /financial analyst|fp&a|financial planning|corporate finance/i, code: '132051', title: 'Financial and Investment Analysts' },
+  { test: /portfolio manager|fund manager|asset manager|wealth manager/i, code: '132051', title: 'Financial and Investment Analysts' },
+  { test: /sales trader|securities trader|\btrader\b|prop trader|equity trader|fixed income trader|crypto trader/i, code: '132099', title: 'Financial Specialists (Securities Traders)' },
+  { test: /compliance analyst|compliance manager|compliance officer/i, code: '131199', title: 'Compliance Officers' },
+  { test: /risk analyst|risk manager|credit risk|market risk/i, code: '132051', title: 'Financial and Investment Analysts' },
+  { test: /accountant|accounting manager|controller\b|cpa\b/i, code: '132011', title: 'Accountants and Auditors' },
+  // ── Marketing ──────────────────────────────────────────────────────────────
+  { test: /marketing manager|head of marketing|vp.*marketing|director.*marketing|chief marketing|cmo\b/i, code: '112021', title: 'Marketing Managers' },
+  { test: /brand manager|brand strategist|brand director/i, code: '112021', title: 'Marketing Managers' },
+  { test: /content marketing|growth marketing|demand generation/i, code: '112021', title: 'Marketing Managers' },
+  { test: /seo specialist|sem specialist|paid media|performance marketing|digital marketing/i, code: '131161', title: 'Market Research Analysts' },
+  { test: /social media manager|community manager/i, code: '131161', title: 'Market Research Analysts' },
+  { test: /market research analyst|marketing analyst/i, code: '131161', title: 'Market Research Analysts' },
+  // ── Sales ──────────────────────────────────────────────────────────────────
+  { test: /account executive|enterprise sales|regional sales|inside sales|field sales/i, code: '412031', title: 'Sales Representatives' },
+  { test: /business development|bdr\b|sdr\b|sales development rep/i, code: '412031', title: 'Sales Representatives' },
+  { test: /customer success manager|client success|account manager/i, code: '419051', title: 'Technical Sales Representatives' },
+  { test: /vp.*sales|director.*sales|head of sales|chief revenue|cro\b/i, code: '412021', title: 'Sales Managers' },
+  // ── HR & People ────────────────────────────────────────────────────────────
+  { test: /human resources manager|hr director|head of.*hr|vp.*hr|chief people|chro\b/i, code: '113121', title: 'Human Resources Managers' },
+  { test: /recruiter|talent acquisition|talent partner|talent scout|sourcer\b/i, code: '131071', title: 'Human Resources Specialists' },
+  { test: /people operations|hr generalist|hr business partner|hrbp\b/i, code: '131071', title: 'Human Resources Specialists' },
+  // ── Legal ──────────────────────────────────────────────────────────────────
+  { test: /lawyer|attorney|general counsel|associate counsel/i, code: '231011', title: 'Lawyers' },
+  { test: /paralegal|legal assistant/i, code: '232011', title: 'Paralegals and Legal Assistants' },
+  // ── Writing & Communications ───────────────────────────────────────────────
+  { test: /copywriter|copy writer/i, code: '273043', title: 'Writers and Authors' },
+  { test: /content writer|content strategist|content creator/i, code: '273043', title: 'Writers and Authors' },
+  { test: /technical writer|documentation specialist/i, code: '273042', title: 'Technical Writers' },
+  { test: /\beditor\b|copy editor|managing editor|editorial manager/i, code: '273041', title: 'Editors' },
+  { test: /journalist|reporter|correspondent/i, code: '273021', title: 'News Analysts, Reporters, and Journalists' },
+  { test: /public relations|pr manager|communications manager|communications director/i, code: '273031', title: 'Public Relations Specialists' },
+  // ── Operations & Strategy ─────────────────────────────────────────────────
+  { test: /supply chain|logistics manager|procurement manager|operations manager/i, code: '113071', title: 'Transportation, Storage, and Distribution Managers' },
+  { test: /strategy|management consultant|strategy consultant|bizops|biz ops/i, code: '131199', title: 'Business Operations Specialists' },
+  // ── Healthcare ─────────────────────────────────────────────────────────────
   { test: /registered nurse|\brn\b/i, code: '291141', title: 'Registered Nurses' },
-  { test: /marketing manager|head of marketing|vp.*marketing|director.*marketing/i, code: '112021', title: 'Marketing Managers' },
-  { test: /human resources|hr manager|head of.*hr|vp.*hr|people operations/i, code: '113121', title: 'Human Resources Managers' },
+  { test: /physician|doctor\b|md\b/i, code: '291215', title: 'Family Medicine Physicians' },
 ];
 
 export async function scrapeBLS(
@@ -1410,6 +1456,42 @@ export async function scrapeBLS(
     data.hibData = hibData;
     if (!data.medianSalary) data.medianSalary = hibData.median;
     sources.push(...hibSources);
+  }
+
+  // ── Mismatch guard ─────────────────────────────────────────────────────────
+  // If the BLS OES fallback updated occupationTitle to something completely unrelated
+  // to the input role (e.g., "Advertising Managers" for a "Senior Copywriter"), discard
+  // the data rather than show confidently wrong salary numbers to the user.
+  if (data.medianSalary && !directMatch && data.occupationTitle !== role) {
+    const coreRoleWords = new Set(
+      role.toLowerCase()
+        .replace(/\b(senior|head of|lead|director of|vp|vice president|principal|staff|junior|associate|chief|founding|sr|jr|i|ii|iii)\b/g, '')
+        .split(/\W+/).filter(w => w.length > 2)
+    );
+    const blsWords = data.occupationTitle.toLowerCase().split(/\W+/).filter(w => w.length > 2);
+    // Abbreviation synonyms — short tokens that map to BLS title words
+    const synonyms: Record<string, string[]> = {
+      ux: ['design', 'interface', 'web', 'digital', 'user'],
+      ui: ['design', 'interface', 'web', 'digital'],
+      ml: ['machine', 'learning', 'research', 'scientist'],
+      ai: ['research', 'scientist', 'intelligence'],
+      swe: ['software', 'developer', 'engineer'],
+      sre: ['reliability', 'systems', 'network'],
+      hr: ['human', 'resources', 'personnel'],
+      qa: ['quality', 'assurance', 'test'],
+      cfo: ['financial', 'finance'],
+      cto: ['technology', 'information', 'systems'],
+      cmo: ['marketing', 'market'],
+    };
+    const hasOverlap = [...coreRoleWords].some(w => {
+      if (blsWords.includes(w)) return true;
+      return synonyms[w]?.some(s => blsWords.includes(s));
+    });
+    if (!hasOverlap) {
+      data.medianSalary = null;
+      data.p10 = null; data.p25 = null; data.p75 = null; data.p90 = null;
+      data.occupationTitle = role;
+    }
   }
 
   normalizeSalaryBands(data);
