@@ -59,6 +59,27 @@ async function searchSerper(query: string, num = 10): Promise<SerpResult[]> {
   }
 }
 
+// Serper news endpoint — hits Google News search (not RSS), counts as 1 quota each.
+async function searchSerperNews(query: string, num = 8): Promise<SerpResult[]> {
+  const key = process.env.SERPER_API_KEY;
+  if (!key) return [];
+  try {
+    const res = await axios.post(
+      'https://google.serper.dev/news',
+      { q: query, num },
+      { headers: { 'X-API-KEY': key, 'Content-Type': 'application/json' }, timeout: 10000 },
+    );
+    const news: Array<{ title?: string; link?: string; snippet?: string }> = res.data?.news ?? [];
+    return news.filter(r => r.link && r.title).map(r => ({
+      title: r.title ?? '',
+      link: r.link ?? '',
+      snippet: r.snippet ?? '',
+    }));
+  } catch {
+    return [];
+  }
+}
+
 // ── SERPAPI ──────────────────────────────────────────────────────────────────
 // Real Google search results via SerpAPI. Key is optional — all callers fall
 // back gracefully if SERPAPI_KEY is not set.
@@ -129,31 +150,44 @@ export async function scrapeGoogleNews(
   const companyWords = companyName.split(/\s+/).filter(w => w.length >= 4);
   const anchor = companyWords.sort((a, b) => b.length - a.length)[0]?.toLowerCase() || companyName.toLowerCase();
 
-  // Fetch all RSS feeds in parallel (was sequential — caused timeouts)
-  const xmlResults = await Promise.all(
-    queries.map(q =>
-      fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=en-US&gl=US&ceid=US:en`)
-    )
-  );
+  // Run RSS feeds + Serper news in parallel
+  const [xmlResults, serperNews1, serperNews2] = await Promise.all([
+    Promise.all(
+      queries.map(q =>
+        fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=en-US&gl=US&ceid=US:en`)
+      )
+    ),
+    searchSerperNews(`${companyQ} news layoffs earnings acquisition`, 10),
+    searchSerperNews(`${companyName} company news 2024 2025`, 8),
+  ]);
 
+  // Process RSS results
   for (const xml of xmlResults) {
     if (!xml || xml.length < 100) continue;
-
     const $ = cheerio.load(xml, { xmlMode: true });
     $('item').each((_, el) => {
       const title = $(el).find('title').text().trim();
       const link = $(el).find('link').text().trim() || $(el).find('guid').text().trim();
       const pubDate = $(el).find('pubDate').text().trim();
-      const source = $(el).find('source').text().trim();
+      const src = $(el).find('source').text().trim();
       const description = $(el).find('description').text().replace(/<[^>]*>/g, '').trim().slice(0, 300);
-
       if (!title || !link || seenUrls.has(link)) return;
       if (!title.toLowerCase().includes(anchor)) return;
-
       seenUrls.add(link);
-      results.push({ title, url: link, summary: description, publishedAt: pubDate, source: source || 'Google News' });
+      results.push({ title, url: link, summary: description, publishedAt: pubDate, source: src || 'Google News' });
       sources.push({ url: link, type: 'google-news', title, timestamp: pubDate || new Date().toISOString() });
     });
+  }
+
+  // Process Serper news results (Google's actual news index — more reliable than RSS)
+  for (const r of [...serperNews1, ...serperNews2]) {
+    if (!r.link || !r.title || seenUrls.has(r.link)) continue;
+    // Accept if company name (any word >= 4 chars) appears in title
+    const companyWords2 = companyName.split(/\s+/).filter(w => w.length >= 3);
+    if (!companyWords2.some(w => r.title.toLowerCase().includes(w.toLowerCase()))) continue;
+    seenUrls.add(r.link);
+    results.push({ title: r.title, url: r.link, summary: r.snippet, publishedAt: '', source: 'Google News' });
+    sources.push({ url: r.link, type: 'google-news', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
   }
 
   return { results: results.slice(0, 50), sources: sources.slice(0, 50) };
@@ -941,6 +975,25 @@ function getPercentileFactors(role: string): { p10: number; p25: number; p75: nu
   return { p10: 0.58, p25: 0.76, p75: 1.30, p90: 1.65 }; // general default
 }
 
+// Direct BLS OES page mapping — prevents misclassification of creative/niche roles.
+// Without this, "Senior Copywriter" matches "Advertising Managers" ($154k) instead of
+// "Writers and Authors" ($73k) because both appear in BLS search results.
+const BLS_DIRECT_MAP: Array<{ test: RegExp; code: string; title: string }> = [
+  { test: /copywriter|copy writer|content writer/i, code: '273043', title: 'Writers and Authors' },
+  { test: /technical writer|documentation/i, code: '273042', title: 'Technical Writers' },
+  { test: /\beditor\b|copy editor|managing editor|editorial/i, code: '273041', title: 'Editors' },
+  { test: /public relations specialist|pr specialist|communications specialist/i, code: '273031', title: 'Public Relations Specialists' },
+  { test: /graphic designer|ui designer|ux designer|visual designer/i, code: '271024', title: 'Graphic Designers' },
+  { test: /art director/i, code: '271011', title: 'Art Directors' },
+  { test: /photographer/i, code: '274021', title: 'Photographers' },
+  { test: /data scientist/i, code: '152098', title: 'Data Scientists' },
+  { test: /data analyst|business analyst/i, code: '152041', title: 'Business Intelligence Analysts' },
+  { test: /software engineer|software developer|backend|frontend|full.?stack/i, code: '151252', title: 'Software Developers' },
+  { test: /accountant|accounting/i, code: '132011', title: 'Accountants and Auditors' },
+  { test: /financial analyst/i, code: '132051', title: 'Financial and Investment Analysts' },
+  { test: /registered nurse|\brn\b/i, code: '291141', title: 'Registered Nurses' },
+];
+
 export async function scrapeBLS(
   role: string,
   location?: string,
@@ -957,6 +1010,54 @@ export async function scrapeBLS(
     yearOverYearChange: 'N/A',
     locationData: '',
   };
+
+  // ── Direct BLS OES lookup for roles with known misclassification risk ────────
+  const directMatch = BLS_DIRECT_MAP.find(m => m.test.test(role));
+  if (directMatch) {
+    try {
+      const oesUrl = `https://www.bls.gov/oes/current/oes${directMatch.code}.htm`;
+      const oesHtml = await fetchHtml(oesUrl);
+      if (oesHtml) {
+        const $oes = cheerio.load(oesHtml);
+        data.occupationTitle = directMatch.title;
+        // BLS OES wage table: rows have "Annual" wages with percentile columns
+        $oes('table').each((_, table) => {
+          const headers = $oes(table).find('th').map((_, th) => $oes(th).text().trim().toLowerCase()).get();
+          const annualIdx = headers.findIndex(h => h.includes('annual'));
+          if (annualIdx < 0) return;
+          $oes(table).find('tr').each((_, row) => {
+            const cells = $oes(row).find('td');
+            if (cells.length < 6) return;
+            const rowLabel = $oes(cells.eq(0)).text().toLowerCase();
+            const parseVal = (i: number) => {
+              const t = $oes(cells.eq(i)).text().replace(/[$,]/g, '').trim();
+              const n = parseInt(t);
+              return n >= 20000 && n <= 800000 ? n : null;
+            };
+            if (rowLabel.includes('percentile') || rowLabel.includes('wage')) {
+              data.p10 = data.p10 ?? parseVal(1);
+              data.p25 = data.p25 ?? parseVal(2);
+              data.medianSalary = data.medianSalary ?? parseVal(3);
+              data.p75 = data.p75 ?? parseVal(4);
+              data.p90 = data.p90 ?? parseVal(5);
+            }
+          });
+        });
+        // Fallback: grab any salary-looking numbers from the page
+        if (!data.medianSalary) {
+          const text = $oes('body').text();
+          const salaries = extractSalaries(text);
+          if (salaries.length >= 3) {
+            const sorted = salaries.sort((a, b) => a - b);
+            data.medianSalary = sorted[Math.floor(sorted.length / 2)];
+          }
+        }
+        if (data.medianSalary) {
+          sources.push({ url: oesUrl, type: 'bls', title: `BLS OES — ${directMatch.title}`, timestamp: new Date().toISOString() });
+        }
+      }
+    } catch { /* fall through to general search */ }
+  }
 
   // ── All searches run in parallel ─────────────────────────────────────────────
   const locationQ = location && location !== 'Remote' ? location : 'United States';
