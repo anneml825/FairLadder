@@ -2046,21 +2046,51 @@ async function fetchNLRB(companyName: string): Promise<string[]> {
   return signals.slice(0, 6);
 }
 
+// ─── OSHA ─────────────────────────────────────────────────────────────────────
+// Searches OSHA inspection and violation records via Serper.
+// No additional API key needed.
+
+async function fetchOSHA(companyName: string): Promise<string[]> {
+  const [oshaSite, oshaGeneral] = await Promise.all([
+    searchWeb(`site:osha.gov "${companyName}"`, 4),
+    searchWeb(`"${companyName}" OSHA violation citation inspection penalty`, 4),
+  ]);
+
+  const signals: string[] = [];
+  const seen = new Set<string>();
+
+  for (const r of [...oshaSite, ...oshaGeneral]) {
+    if (seen.has(r.link)) continue;
+    seen.add(r.link);
+    const isRelevant =
+      r.link.includes('osha.gov') ||
+      r.snippet?.toLowerCase().includes('osha') ||
+      r.snippet?.toLowerCase().includes('citation') ||
+      r.snippet?.toLowerCase().includes('violation') ||
+      r.snippet?.toLowerCase().includes('inspection');
+    if (isRelevant) {
+      signals.push(`${r.title}${r.snippet ? ` — ${r.snippet.slice(0, 120)}` : ''} [URL:${r.link}]`);
+    }
+  }
+
+  return signals.slice(0, 5);
+}
+
 // ─── ENRICHMENT ───────────────────────────────────────────────────────────────
-// Aggregates free-API enrichment. Currently: EDGAR + CourtListener + GitHub + NLRB.
-// OSHA will be added next.
+// Aggregates free-API enrichment: EDGAR + CourtListener + GitHub + NLRB + OSHA.
 
 export async function scrapeEnrichment(
   companyName: string,
 ): Promise<{ data: EnrichmentData; sources: ScrapedSource[] }> {
   const sources: ScrapedSource[] = [];
 
-  // All four run in parallel
-  const [companyFacts, courtCases, github, nlrbSignals] = await Promise.all([
+  // All five run in parallel
+  const [companyFacts, courtCases, github, nlrbSignals, oshaSignals] = await Promise.all([
     fetchEdgarFacts(companyName),
     fetchCourtListener(companyName),
     fetchGitHub(companyName),
     fetchNLRB(companyName),
+    fetchOSHA(companyName),
   ]);
 
   if (companyFacts?.isPublic) {
@@ -2104,12 +2134,25 @@ export async function scrapeEnrichment(
     }
   }
 
+  for (const signal of oshaSignals) {
+    const urlMatch = signal.match(/\[URL:(.*?)\]/);
+    if (urlMatch?.[1]) {
+      sources.push({
+        url: urlMatch[1],
+        type: 'sec',
+        title: signal.split(' — ')[0].replace(/\[URL:.*?\]/, '').trim().slice(0, 120),
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }
+
   return {
     data: {
       companyFacts: companyFacts ?? undefined,
       courtCases: courtCases.length > 0 ? courtCases : undefined,
       github: github ?? undefined,
       nlrbSignals: nlrbSignals.length > 0 ? nlrbSignals : undefined,
+      oshaSignals: oshaSignals.length > 0 ? oshaSignals : undefined,
     },
     sources,
   };

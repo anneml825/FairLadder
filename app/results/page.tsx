@@ -406,6 +406,37 @@ export default function ResultsPage() {
                 </div>
               )}
 
+              {/* OSHA safety signals */}
+              {result.rawData?.enrichment?.oshaSignals && result.rawData.enrichment.oshaSignals.length > 0 && (
+                <div className="mt-4 pt-4 border-t border-[#1e2736]">
+                  <div className="text-xs text-[#8892a4] uppercase tracking-wide mb-3 font-medium">OSHA Safety Violations</div>
+                  <div className="space-y-2">
+                    {result.rawData.enrichment.oshaSignals.map((signal, i) => {
+                      const urlMatch = signal.match(/\[URL:(.*?)\]/);
+                      const url = urlMatch?.[1];
+                      const text = signal.replace(/\[URL:.*?\]/, '').trim();
+                      const [title, ...rest] = text.split(' — ');
+                      return (
+                        <div key={i} className="p-3 rounded-xl bg-orange-500/5 border border-orange-500/15">
+                          {url ? (
+                            <a href={url} target="_blank" rel="noopener noreferrer"
+                              className="text-xs text-orange-300 hover:text-orange-200 transition-colors block font-medium mb-1">
+                              {title}
+                            </a>
+                          ) : (
+                            <p className="text-xs text-orange-300 font-medium mb-1">{title}</p>
+                          )}
+                          {rest.length > 0 && (
+                            <p className="text-[11px] text-[#8892a4] leading-relaxed">{rest.join(' — ')}</p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <p className="text-[10px] text-[#4a5568] mt-2">Source: OSHA inspection records</p>
+                </div>
+              )}
+
               {/* GitHub presence */}
               {result.rawData?.enrichment?.github?.orgHandle && (
                 <div className="mt-4 pt-4 border-t border-[#1e2736]">
