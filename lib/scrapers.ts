@@ -69,11 +69,12 @@ async function searchSerperNews(query: string, num = 8): Promise<SerpResult[]> {
       { q: query, num, tbs: 'qdr:y' },
       { headers: { 'X-API-KEY': key, 'Content-Type': 'application/json' }, timeout: 10000 },
     );
-    const news: Array<{ title?: string; link?: string; snippet?: string }> = res.data?.news ?? [];
+    const news: Array<{ title?: string; link?: string; snippet?: string; date?: string }> = res.data?.news ?? [];
     return news.filter(r => r.link && r.title).map(r => ({
       title: r.title ?? '',
       link: r.link ?? '',
       snippet: r.snippet ?? '',
+      date: r.date ?? '',
     }));
   } catch {
     return [];
@@ -84,7 +85,25 @@ async function searchSerperNews(query: string, num = 8): Promise<SerpResult[]> {
 // Real Google search results via SerpAPI. Key is optional — all callers fall
 // back gracefully if SERPAPI_KEY is not set.
 
-interface SerpResult { title: string; link: string; snippet: string; }
+interface SerpResult { title: string; link: string; snippet: string; date?: string; }
+
+// Parses both RFC 2822 RSS dates ("Mon, 14 Apr 2026 12:00:00 GMT") and
+// Serper relative strings ("3 hours ago", "2 days ago", "1 month ago").
+function parseNewsDate(dateStr: string | undefined): number {
+  if (!dateStr) return 0;
+  const direct = new Date(dateStr).getTime();
+  if (!isNaN(direct)) return direct;
+  const m = dateStr.match(/(\d+)\s+(second|minute|hour|day|week|month|year)/i);
+  if (m) {
+    const n = parseInt(m[1]);
+    const ms: Record<string, number> = {
+      second: 1000, minute: 60000, hour: 3600000,
+      day: 86400000, week: 604800000, month: 2592000000, year: 31536000000,
+    };
+    return Date.now() - n * (ms[m[2].toLowerCase()] ?? 0);
+  }
+  return 0;
+}
 
 const COMPANY_STOPWORDS = new Set([
   'the', 'and', 'inc', 'llc', 'ltd', 'corp', 'co', 'company', 'group', 'holdings',
@@ -277,14 +296,19 @@ export async function scrapeGoogleNews(
     });
   }
 
-  // Process Serper news results (Google's actual news index — more reliable than RSS)
+  // Process Serper news results — carry the date field so we can sort by recency
   for (const r of [...serperNews1, ...serperNews2, ...serperPR]) {
     if (!r.link || !r.title || seenUrls.has(r.link)) continue;
     if (!mentionsCompany(companyName, r.title, r.snippet)) continue;
     seenUrls.add(r.link);
-    results.push({ title: r.title, url: r.link, summary: r.snippet, publishedAt: '', source: 'Google News' });
-    sources.push({ url: r.link, type: 'google-news', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
+    // Normalise Serper relative dates ("3 hours ago") to ISO string
+    const ts = r.date ? new Date(parseNewsDate(r.date)).toISOString() : new Date().toISOString();
+    results.push({ title: r.title, url: r.link, summary: r.snippet, publishedAt: ts, source: 'Google News' });
+    sources.push({ url: r.link, type: 'google-news', title: r.title.slice(0, 100), timestamp: ts });
   }
+
+  // Sort newest-first before slicing — ensures recent 2026 news beats stale 2023 results
+  results.sort((a, b) => parseNewsDate(b.publishedAt) - parseNewsDate(a.publishedAt));
 
   return { results: results.slice(0, 50), sources: sources.slice(0, 50) };
 }

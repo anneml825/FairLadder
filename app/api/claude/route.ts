@@ -128,6 +128,7 @@ BREVITY RULES (non-negotiable):
 - OSHA: Safety violations and inspections are a critical flag for any role involving physical work or facilities. Multiple citations or willful violations = redFlag (critical). A single informal citation in a large company may be minor. Cite "OSHA" as sourceName. For desk/remote roles, mention only if violations are severe or widespread.
 - GITHUB: Mention GitHub only for clearly technical roles or when the company explicitly sells an engineering-first culture. Ignore GitHub for editorial, sales, finance, legal, HR, and general corporate roles.
 - REMOTE POLICY: If the posting does not clearly say remote, hybrid, or on-site, mark Remote Policy Reliability as yellow and say the policy is not specified and should be confirmed in writing. Do not assume in-office from silence.
+- NEWS RECENCY: News articles are sorted newest-first. A 2026 article ALWAYS supersedes a 2024 or 2025 article on the same topic. For lawsuits, regulatory actions, and IPO status, always use the most recent article to determine current status — do NOT flag something as active or pending if a later article shows it was resolved, dismissed, or completed. Example: if a 2023 article says "SEC sues Kraken" and a 2026 article says "SEC drops Kraken lawsuit", the lawsuit is NOT a current red flag.
 - NICHE ROLE / NO DATA: If BLS median is 'not found' AND Levels.fyi salary data is absent, read the job posting responsibilities and requirements carefully to identify the closest standard occupation that has market data (e.g. "develops Python ETL pipelines" → "Data Engineer"; "manages livestock rotation protocols" → "Agricultural Manager"). Use that adjacent role's salary range as the benchmark. Set salaryIntelligence.dataNote to: "No direct market data for [original title] — benchmarked against [adjacent role] based on job responsibilities". Do NOT silently invent numbers without this note.
 
 RADAR SCORING RULES — each dimension is 1–10. Use these anchors strictly. Interpolate between them. Never default to 5 when data exists.
@@ -201,11 +202,15 @@ Employee cons (verbatim themes): ${scrapedData.glassdoor?.cons?.slice(0, 10).joi
 Interview difficulty: ${scrapedData.glassdoor?.interviewDifficulty ?? '?'}/5 | Interview experience: ${scrapedData.glassdoor?.interviewExperience ? `${scrapedData.glassdoor.interviewExperience.positive}% positive` : '?'}
 Interview quotes: ${scrapedData.glassdoor?.interviewQuotes?.slice(0, 2).join(' | ') || 'none'}
 
-NEWS (${scrapedData.news?.length ?? 0} articles — company-relevant first):
+NEWS (${scrapedData.news?.length ?? 0} articles — newest first):
 ${(scrapedData.news ?? [])
   .slice()
   .sort((a, b) => {
-    // Boost articles where company name appears in title
+    // Primary: newest first
+    const aDate = a.publishedAt ? new Date(a.publishedAt).getTime() : 0;
+    const bDate = b.publishedAt ? new Date(b.publishedAt).getTime() : 0;
+    if (bDate !== aDate) return bDate - aDate;
+    // Tiebreak: boost company name in title
     const aMatch = a.title.toLowerCase().includes(request.companyName.toLowerCase()) ? 1 : 0;
     const bMatch = b.title.toLowerCase().includes(request.companyName.toLowerCase()) ? 1 : 0;
     return bMatch - aMatch;
