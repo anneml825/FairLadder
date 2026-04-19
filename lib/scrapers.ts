@@ -144,6 +144,10 @@ function getCompanyAliases(companyName: string, companyContext?: string): string
   return uniqueNonEmpty([...aliases]);
 }
 
+function mentionsAnyCompanyAlias(aliases: string[], ...parts: Array<string | undefined>): boolean {
+  return aliases.some(alias => mentionsCompany(alias, ...parts));
+}
+
 function hasCoreGlassdoorSnapshot(data: GlassdoorData): boolean {
   return Boolean(
     data.overallRating &&
@@ -1712,6 +1716,10 @@ export async function scrapeSEC(
   const [warnRes1, warnRes2] = await Promise.all(warnQueries.map(q => searchWeb(q, 5)));
   for (const r of [...warnRes1, ...warnRes2]) {
     const text = `${r.title} ${r.snippet}`;
+    const fromTrustedWarnSource =
+      /warn\.workforcegps\.org|edd\.ca\.gov|labor\.ny\.gov|mass\.gov|nj\.gov|pa\.gov|illinois\.gov|texas\.gov|sec\.gov|ir\./i.test(r.link);
+    if (!mentionsAnyCompanyAlias(aliases, r.title, r.snippet)) continue;
+    if (!fromTrustedWarnSource) continue;
     if (/warn act|mass layoff|plant closing|workforce reduction/i.test(text)) {
       const dateM = text.match(/\b(20\d\d)\b/);
       // Only extract a worker count if it appears within 80 characters of the company name
@@ -1733,6 +1741,7 @@ export async function scrapeSEC(
   const layoffsFyiRes = await searchWeb(`site:layoffs.fyi ${secCompanyQ} layoff`, 4);
   for (const r of layoffsFyiRes) {
     if (!r.link.includes('layoffs.fyi')) continue;
+    if (!mentionsAnyCompanyAlias(aliases, r.title, r.snippet)) continue;
     const text = `${r.title} ${r.snippet}`;
     const countM = text.match(/(\d[\d,]+)\s*(?:employees?|workers?|jobs?|people)/i);
     const dateM = text.match(/\b(20\d\d)\b/);
@@ -1744,6 +1753,7 @@ export async function scrapeSEC(
   const cbResults = await searchWeb(`site:crunchbase.com ${secCompanyQ} funding investors`, 5);
   for (const r of cbResults) {
     if (!r.link.includes('crunchbase.com')) continue;
+    if (!mentionsAnyCompanyAlias(aliases, r.title, r.snippet, r.link)) continue;
     const text = `${r.title} ${r.snippet}`;
     const fundM = text.match(/\$[\d.]+\s*(?:B|M|billion|million)\s*(?:total funding|raised|in funding)/i);
     if (fundM) data.fundingSignals.push(`Crunchbase: ${fundM[0].trim()}`);
@@ -1761,6 +1771,7 @@ export async function scrapeSEC(
   );
   for (const r of parentResults) {
     const text = `${r.title} ${r.snippet}`;
+    if (!mentionsAnyCompanyAlias(aliases, r.title, r.snippet)) continue;
     // Match: "subsidiary of X", "division of X", "acquired by X", etc.
     const parentM = text.match(
       /(?:subsidiary of|division of|acquired by|owned by|parent company[:\s]+|part of)\s+([A-Z][A-Za-z0-9\s,&.']+?)(?:\.|,|\s+(?:in|for|on|with|and)\s|$)/i,
