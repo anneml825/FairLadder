@@ -271,20 +271,22 @@ export default function ResultsPage() {
                     See full analysis →
                   </button>
                 </div>
-                <div className="flex flex-wrap gap-2">
+                <div className="space-y-2">
                   {result.languageWarnings
                     .filter(w => w.severity === 'red' || w.severity === 'yellow')
                     .map((w, i) => (
-                      <span
-                        key={i}
-                        className={`px-2.5 py-1 rounded-full border text-xs font-medium ${
-                          w.severity === 'red'
-                            ? 'bg-red-500/15 border-red-500/40 text-red-300'
-                            : 'bg-amber-500/15 border-amber-500/40 text-amber-300'
-                        }`}
-                      >
-                        &ldquo;{w.phrase}&rdquo;
-                      </span>
+                      <div key={i} className={`p-2.5 rounded-xl border text-xs ${
+                        w.severity === 'red'
+                          ? 'bg-red-500/10 border-red-500/30'
+                          : 'bg-amber-500/10 border-amber-500/25'
+                      }`}>
+                        <span className={`font-semibold ${w.severity === 'red' ? 'text-red-300' : 'text-amber-300'}`}>
+                          &ldquo;{w.phrase}&rdquo;
+                        </span>
+                        {w.explanation && (
+                          <p className="text-[#8892a4] mt-0.5 leading-relaxed">{w.explanation}</p>
+                        )}
+                      </div>
                     ))}
                 </div>
               </div>

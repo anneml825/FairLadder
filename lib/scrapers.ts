@@ -2023,6 +2023,12 @@ async function fetchGitHub(companyName: string): Promise<GitHubData | null> {
 // Searches NLRB case database for unfair labor practice complaints.
 // Uses Serper — no additional API key needed.
 
+// Domains that return aggregator/junk content unrelated to the searched company
+const JUNK_DOMAINS = [
+  'scribd.com', 'slideshare.net', 'studocu.com', 'coursehero.com',
+  'academia.edu', 'docslib.org', 'issuu.com',
+];
+
 async function fetchNLRB(companyName: string): Promise<string[]> {
   const [nlrbSite, nlrbGeneral] = await Promise.all([
     searchWeb(`site:nlrb.gov "${companyName}"`, 5),
@@ -2031,21 +2037,37 @@ async function fetchNLRB(companyName: string): Promise<string[]> {
 
   const signals: string[] = [];
   const seen = new Set<string>();
+  const companyLower = companyName.toLowerCase();
 
   for (const r of [...nlrbSite, ...nlrbGeneral]) {
     if (seen.has(r.link)) continue;
     seen.add(r.link);
-    const isRelevant =
-      r.link.includes('nlrb.gov') ||
-      r.snippet?.toLowerCase().includes('nlrb') ||
-      r.snippet?.toLowerCase().includes('unfair labor') ||
-      r.snippet?.toLowerCase().includes('labor board');
-    if (isRelevant) {
+
+    // Drop known junk aggregator domains
+    if (JUNK_DOMAINS.some(d => r.link.includes(d))) continue;
+
+    const snippetLower = (r.snippet ?? '').toLowerCase();
+    const titleLower = r.title.toLowerCase();
+    const fromNLRB = r.link.includes('nlrb.gov');
+
+    const hasNLRBSignal =
+      fromNLRB ||
+      snippetLower.includes('nlrb') ||
+      snippetLower.includes('unfair labor practice') ||
+      (snippetLower.includes('labor board') && snippetLower.includes('union'));
+
+    // Non-NLRB.gov results must mention the company name to avoid cross-contamination
+    const mentionsCompany =
+      fromNLRB ||
+      snippetLower.includes(companyLower) ||
+      titleLower.includes(companyLower);
+
+    if (hasNLRBSignal && mentionsCompany) {
       signals.push(`${r.title}${r.snippet ? ` — ${r.snippet.slice(0, 120)}` : ''} [URL:${r.link}]`);
     }
   }
 
-  return signals.slice(0, 6);
+  return signals.slice(0, 5);
 }
 
 // ─── OSHA ─────────────────────────────────────────────────────────────────────
@@ -2060,17 +2082,30 @@ async function fetchOSHA(companyName: string): Promise<string[]> {
 
   const signals: string[] = [];
   const seen = new Set<string>();
+  const companyLower = companyName.toLowerCase();
 
   for (const r of [...oshaSite, ...oshaGeneral]) {
     if (seen.has(r.link)) continue;
     seen.add(r.link);
-    const isRelevant =
-      r.link.includes('osha.gov') ||
-      r.snippet?.toLowerCase().includes('osha') ||
-      r.snippet?.toLowerCase().includes('citation') ||
-      r.snippet?.toLowerCase().includes('violation') ||
-      r.snippet?.toLowerCase().includes('inspection');
-    if (isRelevant) {
+
+    if (JUNK_DOMAINS.some(d => r.link.includes(d))) continue;
+
+    const snippetLower = (r.snippet ?? '').toLowerCase();
+    const titleLower = r.title.toLowerCase();
+    const fromOSHA = r.link.includes('osha.gov');
+
+    const hasOSHASignal =
+      fromOSHA ||
+      snippetLower.includes('osha') ||
+      snippetLower.includes('citation') ||
+      (snippetLower.includes('violation') && snippetLower.includes('inspection'));
+
+    const mentionsCompany =
+      fromOSHA ||
+      snippetLower.includes(companyLower) ||
+      titleLower.includes(companyLower);
+
+    if (hasOSHASignal && mentionsCompany) {
       signals.push(`${r.title}${r.snippet ? ` — ${r.snippet.slice(0, 120)}` : ''} [URL:${r.link}]`);
     }
   }
