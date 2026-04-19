@@ -16,6 +16,7 @@ export default function HomePage() {
   const [form, setForm] = useState({
     jobUrl: '',
     jobText: '',
+    jobTitle: '',
     companyName: '',
     location: '',
     postedSalaryMin: '',
@@ -79,6 +80,7 @@ export default function HomePage() {
     const request = {
       jobUrl: tab === 'url' ? form.jobUrl : undefined,
       jobText: tab === 'paste' ? form.jobText : undefined,
+      jobTitle: form.jobTitle.trim() || undefined,
       companyName: form.companyName,
       location: normalizeLocation(form.location),
       postedSalaryMin: toNum(form.postedSalaryMin),
@@ -201,6 +203,21 @@ export default function HomePage() {
                   className="w-full bg-[#0d1117] border border-[#1e2736] rounded-xl px-4 py-3 text-sm text-white placeholder-[#4a5568] focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30 transition-colors"
                 />
               )}
+
+              {/* Job title */}
+              <div>
+                <label className="block text-xs font-medium text-[#8892a4] mb-1.5 uppercase tracking-wide">
+                  Job title
+                </label>
+                <input
+                  type="text"
+                  value={form.jobTitle}
+                  onChange={e => setForm(f => ({ ...f, jobTitle: e.target.value }))}
+                  placeholder="e.g. Head of UX, Senior Software Engineer, VP Marketing..."
+                  className="w-full bg-[#0d1117] border border-[#1e2736] rounded-xl px-4 py-3 text-sm text-white placeholder-[#4a5568] focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30 transition-colors"
+                />
+                <p className="text-[11px] text-[#4a5568] mt-1">Ensures accurate salary benchmarking — recommended, especially when using a URL.</p>
+              </div>
 
               {/* Company + Location */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

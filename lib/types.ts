@@ -58,6 +58,7 @@ export interface EnrichmentData {
 export interface AnalysisRequest {
   jobUrl?: string;
   jobText?: string;
+  jobTitle?: string;
   companyName: string;
   location: string;
   // What the posting advertises (optional — many jobs don't list it)

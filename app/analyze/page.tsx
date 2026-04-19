@@ -137,20 +137,24 @@ export default function AnalyzePage() {
         }
         if (res) {
           jobPosting = res.data;
-          // Cross-validate: if the scraped title doesn't appear in the job text at all,
-          // it likely came from a list page or the wrong job — fall back to text extraction.
-          const scrapedTitle = res.data?.title || '';
-          const fullText = res.data?.fullText || '';
-          const titleInText = scrapedTitle && fullText.toLowerCase().includes(
-            scrapedTitle.toLowerCase().replace(/,.*$/, '').trim()  // drop ", US" suffixes
-          );
-          if (!titleInText && fullText.length > 200) {
-            // Extract from first meaningful line of the scraped full text
-            const lines = fullText.split(/[\n.]+/).map(l => l.trim()).filter(l =>
-              l.length > 5 && l.length < 80 && /[A-Z]/.test(l) &&
-              !/^(about|apply|benefits|requirements|the company|we are|location)/i.test(l)
+          // User-supplied title wins outright
+          if (request.jobTitle) {
+            jobPosting = { ...res.data, title: request.jobTitle };
+          } else {
+            // Cross-validate: if the scraped title doesn't appear in the job text at all,
+            // it likely came from a list page or the wrong job — fall back to text extraction.
+            const scrapedTitle = res.data?.title || '';
+            const fullText = res.data?.fullText || '';
+            const titleInText = scrapedTitle && fullText.toLowerCase().includes(
+              scrapedTitle.toLowerCase().replace(/,.*$/, '').trim()
             );
-            if (lines[0]) jobPosting = { ...res.data, title: lines[0] };
+            if (!titleInText && fullText.length > 200) {
+              const lines = fullText.split(/[\n.]+/).map(l => l.trim()).filter(l =>
+                l.length > 5 && l.length < 80 && /[A-Z]/.test(l) &&
+                !/^(about|apply|benefits|requirements|the company|we are|location)/i.test(l)
+              );
+              if (lines[0]) jobPosting = { ...res.data, title: lines[0] };
+            }
           }
           addSources(res.sources.length);
           setStep('job', { status: 'done', count: 1 });
@@ -175,7 +179,7 @@ export default function AnalyzePage() {
         );
 
         jobPosting = {
-          title: jobSearchRes?.data?.title || extractedTitle,
+          title: request.jobTitle || jobSearchRes?.data?.title || extractedTitle,
           company: request.companyName,
           location: jobSearchRes?.data?.location || request.location,
           salaryRange: jobSearchRes?.data?.salaryRange || null,
@@ -193,7 +197,8 @@ export default function AnalyzePage() {
         if (!signal.aborted) setStep('job', { status: 'done', count: 1 });
       }
 
-      const role = jobPosting?.title || '';
+      // User-supplied title is authoritative — overrides anything the scraper extracted
+      const role = request.jobTitle || jobPosting?.title || '';
 
       // Extract disambiguating context from the job posting so scrapers don't
       // confuse "Meridian AI startup" with "Meridian Idaho" or "Meridian IT".
