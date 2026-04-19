@@ -1667,7 +1667,11 @@ export async function scrapeSEC(
   if (finRss && finRss.length > 500) {
     const $fin = cheerio.load(finRss, { xmlMode: true });
     $fin('item').each((_, el) => {
-      const combined = `${$fin(el).find('title').text()} ${$fin(el).find('description').text().replace(/<[^>]*>/g, '')}`;
+      const title = $fin(el).find('title').text();
+      const description = $fin(el).find('description').text().replace(/<[^>]*>/g, '');
+      const source = $fin(el).find('source').text();
+      if (!mentionsAnyCompanyAlias(aliases, title, description, source)) return;
+      const combined = `${title} ${description}`;
       const revM = combined.match(/revenue[^$\n]*\$\s*([\d.]+)\s*(billion|million|B|M)\b/gi);
       if (revM) data.financialSignals.push(...revM.slice(0, 2).map(m => m.trim().slice(0, 120)));
       const profitM = combined.match(/(?:profit|loss|net income)[^$\n]*\$\s*([\d.]+)\s*(?:billion|million)/gi);
@@ -1682,7 +1686,11 @@ export async function scrapeSEC(
   if (fundRss && fundRss.length > 500) {
     const $fund = cheerio.load(fundRss, { xmlMode: true });
     $fund('item').each((_, el) => {
-      const combined = `${$fund(el).find('title').text()} ${$fund(el).find('description').text().replace(/<[^>]*>/g, '')}`;
+      const title = $fund(el).find('title').text();
+      const description = $fund(el).find('description').text().replace(/<[^>]*>/g, '');
+      const source = $fund(el).find('source').text();
+      if (!mentionsAnyCompanyAlias(aliases, title, description, source)) return;
+      const combined = `${title} ${description}`;
       const fundM = combined.match(/(?:raised|funding|series|invested)[^$\n]*\$\s*([\d.]+)\s*(?:billion|million|B|M)[^\n]*/gi);
       if (fundM) data.fundingSignals.push(...fundM.slice(0, 2).map(m => m.trim().slice(0, 150)));
       const headM = combined.match(/(\d[\d,]+)\s+employees/gi);
@@ -1752,7 +1760,7 @@ export async function scrapeSEC(
   // Crunchbase — use context to disambiguate (e.g. "Meridian AI" not "Meridian Apps")
   const cbResults = await searchWeb(`site:crunchbase.com ${secCompanyQ} funding investors`, 5);
   for (const r of cbResults) {
-    if (!r.link.includes('crunchbase.com')) continue;
+    if (!r.link.includes('crunchbase.com/organization/')) continue;
     if (!mentionsAnyCompanyAlias(aliases, r.title, r.snippet, r.link)) continue;
     const text = `${r.title} ${r.snippet}`;
     const fundM = text.match(/\$[\d.]+\s*(?:B|M|billion|million)\s*(?:total funding|raised|in funding)/i);
