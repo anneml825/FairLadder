@@ -79,6 +79,95 @@ function BulletList({ bullets }: { bullets: IntelligenceBullet[] }) {
   );
 }
 
+type TaggedSignal = {
+  title: string;
+  detail: string;
+  url?: string;
+};
+
+function splitSignalText(text: string): [string, string] {
+  const parts = text.split(/\s+â€”\s+|\s+—\s+|\s+-\s+/);
+  const [title, ...rest] = parts;
+  return [title?.trim() || text.trim(), rest.join(' — ').trim()];
+}
+
+function parseTaggedSignal(signal: string): TaggedSignal {
+  const urlMatch = signal.match(/\[URL:(.*?)\]/);
+  const text = signal.replace(/\[URL:.*?\]/, '').trim();
+  const [title, detail] = splitSignalText(text);
+  return { title, detail, url: urlMatch?.[1] };
+}
+
+function hasGlassdoorSnapshot(result: AnalysisResult): boolean {
+  const glassdoor = result.rawData?.glassdoor;
+  if (!glassdoor) return false;
+  return Boolean(
+    glassdoor.overallRating ||
+    glassdoor.ceoApproval ||
+    glassdoor.recommendToFriend ||
+    glassdoor.reviewCount ||
+    glassdoor.pros?.length ||
+    glassdoor.cons?.length
+  );
+}
+
+function shouldShowGitHub(result: AnalysisResult): boolean {
+  const role = result.role.toLowerCase();
+  return /engineer|developer|software|frontend|backend|full\s?stack|platform|devops|sre|qa|security|data|machine learning|ml|ai|architect/.test(role);
+}
+
+function summarizeNLRBSignals(signals: string[]): string {
+  const parsed = signals.map(parseTaggedSignal);
+  const unionCount = parsed.filter(({ title, detail }) => /union|petition|election|mailers/i.test(`${title} ${detail}`)).length;
+  const complaintCount = parsed.filter(({ title, detail }) => /complaint|charge|unfair labor practice|case against/i.test(`${title} ${detail}`)).length;
+
+  if (parsed.length === 1) {
+    if (unionCount === 1) return 'One NLRB filing surfaced, and it reads more like a union-related matter than a broad pattern of labor complaints.';
+    if (complaintCount === 1) return 'One NLRB complaint surfaced, which is worth opening but is not enough on its own to show a repeated labor-relations problem.';
+    return 'One NLRB-related record surfaced, so the useful next step is to open it and see whether it is procedural noise or an actual labor dispute.';
+  }
+
+  const lead = complaintCount > 1
+    ? `${parsed.length} NLRB records surfaced, including multiple complaint-style filings that could point to recurring labor friction.`
+    : `${parsed.length} NLRB records surfaced, but they appear mixed rather than a single clear pattern.`;
+  const follow = unionCount
+    ? 'Several of them look union-related, so this reads more like organizing activity plus labor process than a single simple complaint.'
+    : 'These should be read individually because NLRB entries can include procedural filings, elections, and employer complaints in the same bucket.';
+  return `${lead} ${follow}`;
+}
+
+function summarizeOSHASignals(signals: string[]): string {
+  const parsed = signals.map(parseTaggedSignal);
+  const enforcementCount = parsed.filter(({ title, detail }) => /inspection|citation|penalt|fine|violation/i.test(`${title} ${detail}`)).length;
+  const injuryDataCount = parsed.filter(({ title, detail }) => /injury|illness|establishment/i.test(`${title} ${detail}`)).length;
+
+  if (!parsed.length) return '';
+  if (enforcementCount === 0 && injuryDataCount > 0) {
+    return 'The OSHA hits here look like injury or establishment datasets, not obvious enforcement actions, so this is more context than a direct safety red flag for the role.';
+  }
+  if (enforcementCount === 1) {
+    return 'One OSHA enforcement-style record surfaced, which is worth checking for severity and recency before treating it as a meaningful workplace-risk signal.';
+  }
+  return `${parsed.length} OSHA records surfaced, including ${enforcementCount} inspection or citation-style hits, so this is worth reading as a potential operating-risk signal rather than generic safety boilerplate.`;
+}
+
+function summarizeCourtCases(cases: NonNullable<NonNullable<AnalysisResult['rawData']['enrichment']>['courtCases']>): string {
+  const recentCases = cases.filter(c => Number.parseInt(c.dateFiled.slice(0, 4), 10) >= 2021);
+  const employmentCount = cases.filter(c => c.caseType === 'employment' || c.caseType === 'discrimination' || c.caseType === 'wage').length;
+
+  if (cases.length === 1) {
+    return 'One company-linked federal case surfaced, so the main question is the claim type and whether it looks isolated or representative.';
+  }
+
+  const lead = recentCases.length
+    ? `${cases.length} company-linked federal cases surfaced, with ${recentCases.length} filed since 2021.`
+    : `${cases.length} company-linked federal cases surfaced in the lookback window.`;
+  const follow = employmentCount >= 2
+    ? 'Because several are employment-related, this is a real culture and management signal rather than random legal noise.'
+    : 'That still needs context because a single old case is very different from a cluster of recent employment claims.';
+  return `${lead} ${follow}`;
+}
+
 const VERDICT_CONFIG = {
   'STRONG OPPORTUNITY': {
     bg: 'from-emerald-500/20 via-emerald-500/5 to-transparent',
@@ -381,24 +470,24 @@ export default function ResultsPage() {
               {result.rawData?.enrichment?.nlrbSignals && result.rawData.enrichment.nlrbSignals.length > 0 && (
                 <div className="mt-4 pt-4 border-t border-[#1e2736]">
                   <div className="text-xs text-[#8892a4] uppercase tracking-wide mb-3 font-medium">NLRB Labor Complaints</div>
+                  <p className="text-sm text-[#c8d0e0] leading-relaxed mb-3">
+                    {summarizeNLRBSignals(result.rawData.enrichment.nlrbSignals)}
+                  </p>
                   <div className="space-y-2">
-                    {result.rawData.enrichment.nlrbSignals.map((signal, i) => {
-                      const urlMatch = signal.match(/\[URL:(.*?)\]/);
-                      const url = urlMatch?.[1];
-                      const text = signal.replace(/\[URL:.*?\]/, '').trim();
-                      const [title, ...rest] = text.split(' — ');
+                    {result.rawData.enrichment.nlrbSignals.slice(0, 3).map((signal, i) => {
+                      const parsed = parseTaggedSignal(signal);
                       return (
                         <div key={i} className="p-3 rounded-xl bg-red-500/5 border border-red-500/15">
-                          {url ? (
-                            <a href={url} target="_blank" rel="noopener noreferrer"
+                          {parsed.url ? (
+                            <a href={parsed.url} target="_blank" rel="noopener noreferrer"
                               className="text-xs text-red-300 hover:text-red-200 transition-colors block font-medium mb-1">
-                              {title}
+                              {parsed.title}
                             </a>
                           ) : (
-                            <p className="text-xs text-red-300 font-medium mb-1">{title}</p>
+                            <p className="text-xs text-red-300 font-medium mb-1">{parsed.title}</p>
                           )}
-                          {rest.length > 0 && (
-                            <p className="text-[11px] text-[#8892a4] leading-relaxed">{rest.join(' — ')}</p>
+                          {parsed.detail && (
+                            <p className="text-[11px] text-[#8892a4] leading-relaxed">{parsed.detail}</p>
                           )}
                         </div>
                       );
@@ -412,24 +501,24 @@ export default function ResultsPage() {
               {result.rawData?.enrichment?.oshaSignals && result.rawData.enrichment.oshaSignals.length > 0 && (
                 <div className="mt-4 pt-4 border-t border-[#1e2736]">
                   <div className="text-xs text-[#8892a4] uppercase tracking-wide mb-3 font-medium">OSHA Safety Violations</div>
+                  <p className="text-sm text-[#c8d0e0] leading-relaxed mb-3">
+                    {summarizeOSHASignals(result.rawData.enrichment.oshaSignals)}
+                  </p>
                   <div className="space-y-2">
-                    {result.rawData.enrichment.oshaSignals.map((signal, i) => {
-                      const urlMatch = signal.match(/\[URL:(.*?)\]/);
-                      const url = urlMatch?.[1];
-                      const text = signal.replace(/\[URL:.*?\]/, '').trim();
-                      const [title, ...rest] = text.split(' — ');
+                    {result.rawData.enrichment.oshaSignals.slice(0, 3).map((signal, i) => {
+                      const parsed = parseTaggedSignal(signal);
                       return (
                         <div key={i} className="p-3 rounded-xl bg-orange-500/5 border border-orange-500/15">
-                          {url ? (
-                            <a href={url} target="_blank" rel="noopener noreferrer"
+                          {parsed.url ? (
+                            <a href={parsed.url} target="_blank" rel="noopener noreferrer"
                               className="text-xs text-orange-300 hover:text-orange-200 transition-colors block font-medium mb-1">
-                              {title}
+                              {parsed.title}
                             </a>
                           ) : (
-                            <p className="text-xs text-orange-300 font-medium mb-1">{title}</p>
+                            <p className="text-xs text-orange-300 font-medium mb-1">{parsed.title}</p>
                           )}
-                          {rest.length > 0 && (
-                            <p className="text-[11px] text-[#8892a4] leading-relaxed">{rest.join(' — ')}</p>
+                          {parsed.detail && (
+                            <p className="text-[11px] text-[#8892a4] leading-relaxed">{parsed.detail}</p>
                           )}
                         </div>
                       );
@@ -477,7 +566,7 @@ export default function ResultsPage() {
               })()}
 
               {/* GitHub presence */}
-              {result.rawData?.enrichment?.github?.orgHandle && (
+              {result.rawData?.enrichment?.github?.orgHandle && shouldShowGitHub(result) && (
                 <div className="mt-4 pt-4 border-t border-[#1e2736]">
                   <div className="text-xs text-[#8892a4] uppercase tracking-wide mb-3 font-medium">GitHub Presence</div>
                   <div className="flex items-start gap-3 p-3 rounded-xl bg-[#0d1117]/50 border border-[#1e2736]">
@@ -520,8 +609,11 @@ export default function ResultsPage() {
               {result.rawData?.enrichment?.courtCases && result.rawData.enrichment.courtCases.length > 0 && (
                 <div className="mt-4 pt-4 border-t border-[#1e2736]">
                   <div className="text-xs text-[#8892a4] uppercase tracking-wide mb-3 font-medium">Federal Court Cases</div>
+                  <p className="text-sm text-[#c8d0e0] leading-relaxed mb-3">
+                    {summarizeCourtCases(result.rawData.enrichment.courtCases)}
+                  </p>
                   <div className="space-y-2">
-                    {result.rawData.enrichment.courtCases.map((c, i) => {
+                    {result.rawData.enrichment.courtCases.slice(0, 3).map((c, i) => {
                       const typeColor =
                         c.caseType === 'discrimination' ? 'text-red-400 bg-red-500/10 border-red-500/20' :
                         c.caseType === 'wage' ? 'text-amber-400 bg-amber-500/10 border-amber-500/20' :
@@ -556,7 +648,7 @@ export default function ResultsPage() {
               )}
 
               {/* Glassdoor snapshot */}
-              {result.rawData?.glassdoor && (
+              {hasGlassdoorSnapshot(result) && result.rawData?.glassdoor && (
                 <div className="mt-4 pt-4 border-t border-[#1e2736]">
                   <div className="text-xs text-[#8892a4] uppercase tracking-wide mb-3 font-medium">Glassdoor Snapshot</div>
                   <div className="grid grid-cols-3 gap-3">
@@ -758,3 +850,4 @@ export default function ResultsPage() {
     </div>
   );
 }
+

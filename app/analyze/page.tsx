@@ -232,37 +232,51 @@ export default function AnalyzePage() {
       if (newsRes) {
         setStep('news', { status: 'done', count: newsRes.results.length });
         addSources(newsRes.sources.length);
-      } else setStep('news', { status: newsRes === null && !signal.aborted ? 'error' : 'done', count: 0 });
+      } else if (!signal.aborted) {
+        setStep('news', { status: 'error', count: 0 });
+      }
 
       if (redditRes) {
         setStep('reddit', { status: 'done', count: redditRes.threads.length });
         addSources(redditRes.sources.length);
-      } else setStep('reddit', { status: 'done', count: 0 });
+      } else if (!signal.aborted) {
+        setStep('reddit', { status: 'error', count: 0 });
+      }
 
       if (glassdoorRes) {
         setStep('glassdoor', { status: 'done', count: glassdoorRes.sources.length });
         addSources(glassdoorRes.sources.length);
-      } else setStep('glassdoor', { status: 'done', count: 0 });
+      } else if (!signal.aborted) {
+        setStep('glassdoor', { status: 'error', count: 0 });
+      }
 
       if (levelsRes) {
         setStep('levels', { status: 'done', count: levelsRes.data.targetRoleSalaries.length + levelsRes.data.comparableSalaries.length });
         addSources(levelsRes.sources.length);
-      } else setStep('levels', { status: 'done', count: 0 });
+      } else if (!signal.aborted) {
+        setStep('levels', { status: 'error', count: 0 });
+      }
 
       if (blsRes) {
         setStep('bls', { status: 'done', count: blsRes.sources.length });
         addSources(blsRes.sources.length);
-      } else setStep('bls', { status: 'done', count: 0 });
+      } else if (!signal.aborted) {
+        setStep('bls', { status: 'error', count: 0 });
+      }
 
       if (secRes) {
         setStep('sec', { status: 'done', count: secRes.sources.length });
         addSources(secRes.sources.length);
-      } else setStep('sec', { status: 'done', count: 0 });
+      } else if (!signal.aborted) {
+        setStep('sec', { status: 'error', count: 0 });
+      }
 
       if (enrichRes) {
         setStep('enrich', { status: 'done', count: enrichRes.sources.length });
         addSources(enrichRes.sources.length);
-      } else setStep('enrich', { status: 'done', count: 0 });
+      } else if (!signal.aborted) {
+        setStep('enrich', { status: 'error', count: 0 });
+      }
 
       // ── 3. Aggregate all sources ──────────────────────────────────────────
       const allSources: ScrapedSource[] = [
