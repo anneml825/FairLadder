@@ -66,7 +66,7 @@ async function searchSerperNews(query: string, num = 8): Promise<SerpResult[]> {
   try {
     const res = await axios.post(
       'https://google.serper.dev/news',
-      { q: query, num },
+      { q: query, num, tbs: 'qdr:y' },
       { headers: { 'X-API-KEY': key, 'Content-Type': 'application/json' }, timeout: 10000 },
     );
     const news: Array<{ title?: string; link?: string; snippet?: string }> = res.data?.news ?? [];
@@ -113,6 +113,21 @@ function mentionsCompany(companyName: string, ...parts: Array<string | undefined
 
   const matches = tokens.filter(token => joined.includes(token));
   return matches.length === tokens.length || matches.length >= Math.min(2, tokens.length);
+}
+
+// Returns true when the company name appears as part of a clearly different entity.
+// e.g. "Kraken" → "Kraken Restaurant Workers Union" should be rejected for Kraken (crypto).
+function isEntityNameClash(companyName: string, ...parts: Array<string | undefined>): boolean {
+  const name = companyName.toLowerCase().trim();
+  const combined = parts.filter(Boolean).join(' ').toLowerCase();
+  const idx = combined.indexOf(name);
+  if (idx === -1) return false;
+  // Get the word immediately after the company name in the text
+  const after = combined.slice(idx + name.length).replace(/^[^a-z]+/, '');
+  const differentEntityWords = /^(restaurant|café|cafe|bar|hotel|school|college|university|church|hospital|medical|clinic|diner|bakery|brewery|pub|tavern|lounge|salon|spa|gym|fitness|boutique|store|market|motors|auto)/;
+  if (!differentEntityWords.test(after)) return false;
+  // Only flag as a clash if the original company name doesn't contain these industry words
+  return !differentEntityWords.test(companyName.toLowerCase());
 }
 
 function uniqueNonEmpty(values: Array<string | undefined | null>): string[] {
@@ -232,15 +247,16 @@ export async function scrapeGoogleNews(
     queries.push(`${companyQ} "${role}" salary OR compensation OR hiring`);
   }
 
-  // Run RSS feeds + Serper news in parallel
-  const [xmlResults, serperNews1, serperNews2] = await Promise.all([
+  // Run RSS feeds + Serper news in parallel — all date-filtered to last year
+  const [xmlResults, serperNews1, serperNews2, serperPR] = await Promise.all([
     Promise.all(
       queries.map(q =>
-        fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=en-US&gl=US&ceid=US:en`)
+        fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(q + ' after:2025-01-01')}&hl=en-US&gl=US&ceid=US:en`)
       )
     ),
-    searchSerperNews(`${companyQ} news layoffs earnings acquisition`, 10),
-    searchSerperNews(`${companyName} company news 2024 2025`, 8),
+    searchSerperNews(`${companyQ} news layoffs earnings acquisition IPO lawsuit`, 10),
+    searchSerperNews(`${companyName} company news 2025 2026`, 8),
+    searchSerperNews(`site:prnewswire.com OR site:businesswire.com OR site:globenewswire.com "${companyName}"`, 6),
   ]);
 
   // Process RSS results
@@ -262,7 +278,7 @@ export async function scrapeGoogleNews(
   }
 
   // Process Serper news results (Google's actual news index — more reliable than RSS)
-  for (const r of [...serperNews1, ...serperNews2]) {
+  for (const r of [...serperNews1, ...serperNews2, ...serperPR]) {
     if (!r.link || !r.title || seenUrls.has(r.link)) continue;
     if (!mentionsCompany(companyName, r.title, r.snippet)) continue;
     seenUrls.add(r.link);
@@ -1079,15 +1095,22 @@ const BLS_DIRECT_MAP: Array<{ test: RegExp; code: string; title: string }> = [
   { test: /technical writer|documentation/i, code: '273042', title: 'Technical Writers' },
   { test: /\beditor\b|copy editor|managing editor|editorial/i, code: '273041', title: 'Editors' },
   { test: /public relations specialist|pr specialist|communications specialist/i, code: '273031', title: 'Public Relations Specialists' },
-  { test: /graphic designer|ui designer|ux designer|visual designer/i, code: '271024', title: 'Graphic Designers' },
+  // UX/UI/Product design — must come before generic "graphic designer" entry
+  { test: /\bux\b|\bui\b.*design|design.*\bui\b|user experience|product designer|ux researcher|ux lead|head of ux|vp.*ux|ux.*director|interaction designer/i, code: '151254', title: 'Web and Digital Interface Designers' },
+  { test: /graphic designer|visual designer/i, code: '271024', title: 'Graphic Designers' },
   { test: /art director/i, code: '271011', title: 'Art Directors' },
   { test: /photographer/i, code: '274021', title: 'Photographers' },
   { test: /data scientist/i, code: '152098', title: 'Data Scientists' },
   { test: /data analyst|business analyst/i, code: '152041', title: 'Business Intelligence Analysts' },
+  { test: /data engineer|etl|pipeline/i, code: '151242', title: 'Database Administrators and Architects' },
   { test: /software engineer|software developer|backend|frontend|full.?stack/i, code: '151252', title: 'Software Developers' },
+  { test: /product manager|head of product|vp.*product|chief product/i, code: '119199', title: 'Business Operations Specialists' },
   { test: /accountant|accounting/i, code: '132011', title: 'Accountants and Auditors' },
   { test: /financial analyst/i, code: '132051', title: 'Financial and Investment Analysts' },
+  { test: /sales trader|securities trader|\btrader\b.*crypto|\btrader\b.*equities|\btrader\b.*fx/i, code: '132099', title: 'Financial Specialists (Securities Traders)' },
   { test: /registered nurse|\brn\b/i, code: '291141', title: 'Registered Nurses' },
+  { test: /marketing manager|head of marketing|vp.*marketing|director.*marketing/i, code: '112021', title: 'Marketing Managers' },
+  { test: /human resources|hr manager|head of.*hr|vp.*hr|people operations/i, code: '113121', title: 'Human Resources Managers' },
 ];
 
 export async function scrapeBLS(
@@ -1877,9 +1900,23 @@ export async function scrapeJobPosting(
   const $ = cheerio.load(html);
   $('script, style, nav, footer, header, [aria-hidden="true"]').remove();
 
+  // og:title — most reliable for React SPAs and modern job boards (set via SSR meta tags)
+  if (!data.title) {
+    const ogTitle = $('meta[property="og:title"]').attr('content')
+      || $('meta[name="twitter:title"]').attr('content')
+      || '';
+    if (ogTitle) {
+      // Strip company name suffix: "Head of UX | Kraken" → "Head of UX"
+      const cleaned = ogTitle.split(/\s*[|\-–]\s*/)[0].trim();
+      if (cleaned && cleaned.length < 120) data.title = cleaned;
+    }
+  }
+
   // ATS-specific selectors (Greenhouse, Lever, Workday, Ashby, iCIMS)
   const titleSelectors = [
-    '.job-title', '.posting-headline h2', '[data-ui="job-title"]',
+    '.app-title',                                   // Greenhouse
+    '.posting-headline h2', '.posting-title',       // Lever
+    '[data-ui="job-title"]',                        // Workday
     '[class*="JobTitle"]', '[class*="job_title"]', '[class*="jobtitle"]',
     'h1.title', 'h1[class*="title"]', 'h1',
   ];
@@ -2290,6 +2327,7 @@ async function fetchNLRB(companyName: string): Promise<string[]> {
       (snippetLower.includes('labor board') && snippetLower.includes('union'));
 
     const mentionsCompanyName = mentionsCompany(companyName, r.title, r.snippet);
+    if (isEntityNameClash(companyName, r.title, r.snippet)) continue;
 
     if (hasNLRBSignal && mentionsCompanyName) {
       signals.push(`${r.title}${r.snippet ? ` — ${r.snippet.slice(0, 120)}` : ''} [URL:${r.link}]`);
@@ -2328,6 +2366,7 @@ async function fetchOSHA(companyName: string): Promise<string[]> {
       (snippetLower.includes('violation') && snippetLower.includes('inspection'));
 
     const mentionsCompanyName = mentionsCompany(companyName, r.title, r.snippet);
+    if (isEntityNameClash(companyName, r.title, r.snippet)) continue;
     const recordSpecific =
       /inspection|citation|penalt|fine|fatal|injury|illness|establishment/i.test(r.title) ||
       /inspection|citation|penalt|fine|fatal|injury|illness|establishment/i.test(r.snippet ?? '');

@@ -137,6 +137,21 @@ export default function AnalyzePage() {
         }
         if (res) {
           jobPosting = res.data;
+          // Cross-validate: if the scraped title doesn't appear in the job text at all,
+          // it likely came from a list page or the wrong job — fall back to text extraction.
+          const scrapedTitle = res.data?.title || '';
+          const fullText = res.data?.fullText || '';
+          const titleInText = scrapedTitle && fullText.toLowerCase().includes(
+            scrapedTitle.toLowerCase().replace(/,.*$/, '').trim()  // drop ", US" suffixes
+          );
+          if (!titleInText && fullText.length > 200) {
+            // Extract from first meaningful line of the scraped full text
+            const lines = fullText.split(/[\n.]+/).map(l => l.trim()).filter(l =>
+              l.length > 5 && l.length < 80 && /[A-Z]/.test(l) &&
+              !/^(about|apply|benefits|requirements|the company|we are|location)/i.test(l)
+            );
+            if (lines[0]) jobPosting = { ...res.data, title: lines[0] };
+          }
           addSources(res.sources.length);
           setStep('job', { status: 'done', count: 1 });
         } else if (signal.aborted) return;
