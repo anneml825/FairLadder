@@ -1893,7 +1893,7 @@ async function fetchEdgarFacts(companyName: string): Promise<CompanyFactsData | 
 // if token is absent.
 
 async function fetchCourtListener(companyName: string): Promise<CourtCase[]> {
-  const token = process.env.COURTLISTENER_TOKEN;
+  const token = process.env.COURTLISTENER_KEY;
   if (!token) return [];
 
   type CLResult = {
