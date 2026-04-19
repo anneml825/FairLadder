@@ -2112,10 +2112,18 @@ async function fetchCourtListener(companyName: string): Promise<CourtCase[]> {
   const seen = new Set<string>();
   const cases: CourtCase[] = [];
 
+  // Anchor: longest word in company name (≥4 chars) — "Dow Jones" → "jones"
+  const nameWords = companyName.toLowerCase().split(/\s+/);
+  const nameAnchor = [...nameWords].sort((a, b) => b.length - a.length).find(w => w.length >= 4) ?? nameWords[0];
+
   for (const batch of batches) {
     for (const r of batch) {
       const title = r.caseName ?? '';
       if (!title || seen.has(title)) continue;
+
+      // Only keep cases that actually name this company — filters out same-district unrelated cases
+      if (!title.toLowerCase().includes(nameAnchor)) continue;
+
       seen.add(title);
 
       const combined = (title + (r.snippet ?? '')).toLowerCase();
@@ -2136,7 +2144,7 @@ async function fetchCourtListener(companyName: string): Promise<CourtCase[]> {
     }
   }
 
-  return cases.slice(0, 8);
+  return cases.slice(0, 6);
 }
 
 // ─── GITHUB ───────────────────────────────────────────────────────────────────

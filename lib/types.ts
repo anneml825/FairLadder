@@ -277,6 +277,8 @@ export interface AnalysisResult {
   offerAnalysis?: string;
   dataGaps?: string[];
   bottomLine: string;
+  nlrbSummary?: string;
+  oshaSummary?: string;
 
   rawData: {
     glassdoor?: GlassdoorData;

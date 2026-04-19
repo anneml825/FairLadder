@@ -378,63 +378,31 @@ export default function ResultsPage() {
               })()}
 
               {/* NLRB labor signals */}
-              {result.rawData?.enrichment?.nlrbSignals && result.rawData.enrichment.nlrbSignals.length > 0 && (
+              {(result.nlrbSummary || (result.rawData?.enrichment?.nlrbSignals && result.rawData.enrichment.nlrbSignals.length > 0)) && (
                 <div className="mt-4 pt-4 border-t border-[#1e2736]">
-                  <div className="text-xs text-[#8892a4] uppercase tracking-wide mb-3 font-medium">NLRB Labor Complaints</div>
-                  <div className="space-y-2">
-                    {result.rawData.enrichment.nlrbSignals.map((signal, i) => {
-                      const urlMatch = signal.match(/\[URL:(.*?)\]/);
-                      const url = urlMatch?.[1];
-                      const text = signal.replace(/\[URL:.*?\]/, '').trim();
-                      const [title, ...rest] = text.split(' — ');
-                      return (
-                        <div key={i} className="p-3 rounded-xl bg-red-500/5 border border-red-500/15">
-                          {url ? (
-                            <a href={url} target="_blank" rel="noopener noreferrer"
-                              className="text-xs text-red-300 hover:text-red-200 transition-colors block font-medium mb-1">
-                              {title}
-                            </a>
-                          ) : (
-                            <p className="text-xs text-red-300 font-medium mb-1">{title}</p>
-                          )}
-                          {rest.length > 0 && (
-                            <p className="text-[11px] text-[#8892a4] leading-relaxed">{rest.join(' — ')}</p>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
+                  <div className="text-xs text-[#8892a4] uppercase tracking-wide mb-2 font-medium">NLRB Labor Complaints</div>
+                  {result.nlrbSummary ? (
+                    <p className="text-sm text-[#c8d0e0] leading-relaxed">{result.nlrbSummary}</p>
+                  ) : (
+                    <p className="text-sm text-[#c8d0e0] leading-relaxed">
+                      {result.rawData!.enrichment!.nlrbSignals!.length} NLRB signal{result.rawData!.enrichment!.nlrbSignals!.length > 1 ? 's' : ''} found — review the Flags tab for details.
+                    </p>
+                  )}
                   <p className="text-[10px] text-[#4a5568] mt-2">Source: NLRB case database</p>
                 </div>
               )}
 
               {/* OSHA safety signals */}
-              {result.rawData?.enrichment?.oshaSignals && result.rawData.enrichment.oshaSignals.length > 0 && (
+              {(result.oshaSummary || (result.rawData?.enrichment?.oshaSignals && result.rawData.enrichment.oshaSignals.length > 0)) && (
                 <div className="mt-4 pt-4 border-t border-[#1e2736]">
-                  <div className="text-xs text-[#8892a4] uppercase tracking-wide mb-3 font-medium">OSHA Safety Violations</div>
-                  <div className="space-y-2">
-                    {result.rawData.enrichment.oshaSignals.map((signal, i) => {
-                      const urlMatch = signal.match(/\[URL:(.*?)\]/);
-                      const url = urlMatch?.[1];
-                      const text = signal.replace(/\[URL:.*?\]/, '').trim();
-                      const [title, ...rest] = text.split(' — ');
-                      return (
-                        <div key={i} className="p-3 rounded-xl bg-orange-500/5 border border-orange-500/15">
-                          {url ? (
-                            <a href={url} target="_blank" rel="noopener noreferrer"
-                              className="text-xs text-orange-300 hover:text-orange-200 transition-colors block font-medium mb-1">
-                              {title}
-                            </a>
-                          ) : (
-                            <p className="text-xs text-orange-300 font-medium mb-1">{title}</p>
-                          )}
-                          {rest.length > 0 && (
-                            <p className="text-[11px] text-[#8892a4] leading-relaxed">{rest.join(' — ')}</p>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
+                  <div className="text-xs text-[#8892a4] uppercase tracking-wide mb-2 font-medium">OSHA Safety Violations</div>
+                  {result.oshaSummary ? (
+                    <p className="text-sm text-[#c8d0e0] leading-relaxed">{result.oshaSummary}</p>
+                  ) : (
+                    <p className="text-sm text-[#c8d0e0] leading-relaxed">
+                      {result.rawData!.enrichment!.oshaSignals!.length} OSHA signal{result.rawData!.enrichment!.oshaSignals!.length > 1 ? 's' : ''} found — review the Flags tab for details.
+                    </p>
+                  )}
                   <p className="text-[10px] text-[#4a5568] mt-2">Source: OSHA inspection records</p>
                 </div>
               )}
@@ -476,8 +444,8 @@ export default function ResultsPage() {
                 );
               })()}
 
-              {/* GitHub presence */}
-              {result.rawData?.enrichment?.github?.orgHandle && (
+              {/* GitHub presence — only relevant for tech roles */}
+              {result.rawData?.enrichment?.github?.orgHandle && /engineer|developer|software|devops|sre|data|ml|ai|backend|frontend|fullstack|platform|infrastructure|security|architect|programmer|coding|tech lead/i.test(result.role) && (
                 <div className="mt-4 pt-4 border-t border-[#1e2736]">
                   <div className="text-xs text-[#8892a4] uppercase tracking-wide mb-3 font-medium">GitHub Presence</div>
                   <div className="flex items-start gap-3 p-3 rounded-xl bg-[#0d1117]/50 border border-[#1e2736]">
