@@ -86,6 +86,92 @@ async function searchSerperNews(query: string, num = 8): Promise<SerpResult[]> {
 
 interface SerpResult { title: string; link: string; snippet: string; }
 
+const COMPANY_STOPWORDS = new Set([
+  'the', 'and', 'inc', 'llc', 'ltd', 'corp', 'co', 'company', 'group', 'holdings',
+  'technologies', 'technology', 'systems', 'services',
+]);
+
+function normalizeCompanyText(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function getCompanyTokens(companyName: string): string[] {
+  return companyName
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(token => token.length >= 3 && !COMPANY_STOPWORDS.has(token));
+}
+
+function mentionsCompany(companyName: string, ...parts: Array<string | undefined>): boolean {
+  const joined = parts.filter(Boolean).join(' ').toLowerCase();
+  const normalizedJoined = normalizeCompanyText(joined);
+  const normalizedCompany = normalizeCompanyText(companyName);
+  if (normalizedCompany && normalizedJoined.includes(normalizedCompany)) return true;
+
+  const tokens = getCompanyTokens(companyName);
+  if (!tokens.length) return false;
+
+  const matches = tokens.filter(token => joined.includes(token));
+  return matches.length === tokens.length || matches.length >= Math.min(2, tokens.length);
+}
+
+function uniqueNonEmpty(values: Array<string | undefined | null>): string[] {
+  return [...new Set(values.map(v => (v ?? '').trim()).filter(Boolean))];
+}
+
+function getCompanyAliases(companyName: string, companyContext?: string): string[] {
+  const base = companyName.trim();
+  const aliases = new Set<string>(edgarNameVariants(base));
+  const normalized = base.replace(/[.,]+$/g, '').trim();
+  aliases.add(normalized);
+
+  const withoutSuffix = normalized
+    .replace(/\s+(incorporated|inc\.?|corporation|corp\.?|company|co\.?|group|holdings?|holding|llc|ltd\.?|limited|plc)\b/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (withoutSuffix.length > 2) aliases.add(withoutSuffix);
+
+  const firstTwoWords = normalized.split(/\s+/).slice(0, 2).join(' ').trim();
+  if (firstTwoWords.length > 2) aliases.add(firstTwoWords);
+
+  const compact = normalized.replace(/\s+/g, '');
+  if (compact.length > 2 && compact !== normalized) aliases.add(compact);
+
+  if (companyContext) {
+    aliases.add(`${withoutSuffix || normalized} ${companyContext}`.trim());
+  }
+
+  return uniqueNonEmpty([...aliases]);
+}
+
+function mentionsAnyCompanyAlias(aliases: string[], ...parts: Array<string | undefined>): boolean {
+  return aliases.some(alias => mentionsCompany(alias, ...parts));
+}
+
+function hasCoreGlassdoorSnapshot(data: GlassdoorData): boolean {
+  return Boolean(
+    data.overallRating &&
+    (data.reviewCount || data.ceoApproval || data.recommendToFriend),
+  );
+}
+
+function normalizeSalaryBands(data: Pick<BLSData, 'medianSalary' | 'p10' | 'p25' | 'p75' | 'p90'>): void {
+  const median = data.medianSalary ?? undefined;
+  if (!median) return;
+
+  if (data.p10 && data.p10 > median) data.p10 = Math.min(data.p10, Math.round(median * 0.85));
+  if (data.p25 && data.p25 > median) data.p25 = Math.min(data.p25, Math.round(median * 0.95));
+  if (data.p75 && data.p75 < median) data.p75 = Math.max(data.p75, Math.round(median * 1.05));
+  if (data.p90 && data.p90 < median) data.p90 = Math.max(data.p90, Math.round(median * 1.15));
+
+  if (data.p10 && data.p25 && data.p10 > data.p25) data.p10 = Math.min(data.p10, Math.round(data.p25 * 0.9));
+  if (data.p25 && data.p75 && data.p25 > data.p75) {
+    data.p25 = Math.min(data.p25, Math.round(median * 0.95));
+    data.p75 = Math.max(data.p75, Math.round(median * 1.05));
+  }
+  if (data.p75 && data.p90 && data.p75 > data.p90) data.p90 = Math.max(data.p90, Math.round(data.p75 * 1.1));
+}
+
 async function searchSerp(query: string, num = 10): Promise<SerpResult[]> {
   const key = process.env.SERPAPI_KEY;
   if (!key) return [];
@@ -146,10 +232,6 @@ export async function scrapeGoogleNews(
     queries.push(`${companyQ} "${role}" salary OR compensation OR hiring`);
   }
 
-  // Keyword that must appear in title to keep the article — prevents off-topic noise.
-  const companyWords = companyName.split(/\s+/).filter(w => w.length >= 4);
-  const anchor = companyWords.sort((a, b) => b.length - a.length)[0]?.toLowerCase() || companyName.toLowerCase();
-
   // Run RSS feeds + Serper news in parallel
   const [xmlResults, serperNews1, serperNews2] = await Promise.all([
     Promise.all(
@@ -172,7 +254,7 @@ export async function scrapeGoogleNews(
       const src = $(el).find('source').text().trim();
       const description = $(el).find('description').text().replace(/<[^>]*>/g, '').trim().slice(0, 300);
       if (!title || !link || seenUrls.has(link)) return;
-      if (!title.toLowerCase().includes(anchor)) return;
+      if (!mentionsCompany(companyName, title, description, src)) return;
       seenUrls.add(link);
       results.push({ title, url: link, summary: description, publishedAt: pubDate, source: src || 'Google News' });
       sources.push({ url: link, type: 'google-news', title, timestamp: pubDate || new Date().toISOString() });
@@ -182,9 +264,7 @@ export async function scrapeGoogleNews(
   // Process Serper news results (Google's actual news index — more reliable than RSS)
   for (const r of [...serperNews1, ...serperNews2]) {
     if (!r.link || !r.title || seenUrls.has(r.link)) continue;
-    // Accept if company name (any word >= 4 chars) appears in title
-    const companyWords2 = companyName.split(/\s+/).filter(w => w.length >= 3);
-    if (!companyWords2.some(w => r.title.toLowerCase().includes(w.toLowerCase()))) continue;
+    if (!mentionsCompany(companyName, r.title, r.snippet)) continue;
     seenUrls.add(r.link);
     results.push({ title: r.title, url: r.link, summary: r.snippet, publishedAt: '', source: 'Google News' });
     sources.push({ url: r.link, type: 'google-news', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
@@ -495,6 +575,7 @@ export async function scrapeGlassdoor(
 
   const ctx = companyContext ? ` ${companyContext}` : '';
   const companyQ = `"${companyName}"${ctx}`;
+  const aliases = getCompanyAliases(companyName, companyContext);
 
   const glassdoorSearches = [
     `${companyQ} glassdoor reviews rating culture employees`,
@@ -505,11 +586,11 @@ export async function scrapeGlassdoor(
   ];
   let glassdoorDirectUrl: string | null = null;
 
-  for (const q of glassdoorSearches) {
-    const reviewSearchResults = await searchWeb(q, 10);
-    for (const r of reviewSearchResults) {
+  const reviewSearchResults = (await Promise.all(glassdoorSearches.slice(0, 3).map(q => searchWeb(q, 8)))).flat();
+  for (const r of reviewSearchResults) {
       const lower = r.link.toLowerCase();
       const combinedText = `${r.title} ${r.snippet}`;
+      if (!aliases.some(alias => mentionsCompany(alias, combinedText))) continue;
 
       // Extract rating from snippet (Google caches the rating in meta description)
       if (!data.overallRating) {
@@ -559,7 +640,10 @@ export async function scrapeGlassdoor(
       if (isReviewSite) {
         sources.push({ url: r.link, type: 'glassdoor', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
       }
-    }
+  }
+
+  if (hasCoreGlassdoorSnapshot(data)) {
+    return { data, sources: sources.slice(0, 12) };
   }
 
   // Strategy 1b: Fetch the Glassdoor Reviews page and extract Apollo GraphQL state.
@@ -616,6 +700,10 @@ export async function scrapeGlassdoor(
     }
   }
 
+  if (hasCoreGlassdoorSnapshot(data)) {
+    return { data, sources: sources.slice(0, 12) };
+  }
+
   // Comparably — server-side rendered, less aggressive bot detection
   const comparablySlug = companyName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 
@@ -650,6 +738,10 @@ export async function scrapeGlassdoor(
       const t = $c(el).text().trim();
       if (t.length > 15 && t.length < 300 && data.cons.length < 5) data.cons.push(t.slice(0, 200));
     });
+  }
+
+  if (hasCoreGlassdoorSnapshot(data)) {
+    return { data, sources: sources.slice(0, 12) };
   }
 
   // Comparably CEO page
@@ -757,6 +849,10 @@ export async function scrapeGlassdoor(
         data.cons.push($i(el).text().trim().slice(0, 200));
       });
     }
+  }
+
+  if (hasCoreGlassdoorSnapshot(data)) {
+    return { data, sources: sources.slice(0, 12) };
   }
 
   // Blind — anonymous employee posts, often more candid than Glassdoor
@@ -1293,6 +1389,8 @@ export async function scrapeBLS(
     sources.push(...hibSources);
   }
 
+  normalizeSalaryBands(data);
+
   return { data, sources };
 }
 
@@ -1401,22 +1499,18 @@ export async function scrapeSEC(
     fundingSignals: [],
     financialSignals: [],
   };
+  const aliases = getCompanyAliases(companyName, companyContext);
 
   // Try the exact name first; if no results, fall back to name variants
   const buildSecSearchUrl = (name: string, forms: string) =>
     `https://efts.sec.gov/LATEST/search-index?q=%22${encodeURIComponent(name)}%22&dateRange=custom&startdt=${new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]}&enddt=${new Date().toISOString().split('T')[0]}&forms=${forms}`;
 
   let searchUrl = buildSecSearchUrl(companyName, '8-K');
-  let html = await fetchHtml(searchUrl, { Accept: 'application/json', Referer: 'https://efts.sec.gov/' });
-
-  // If no results with exact name, try name variants (handles "StoneX" → "StoneX Group Inc.")
-  if (!html || html.length < 50) {
-    for (const variant of edgarNameVariants(companyName)) {
-      if (variant === companyName) continue;
-      searchUrl = buildSecSearchUrl(variant, '8-K');
-      html = await fetchHtml(searchUrl, { Accept: 'application/json', Referer: 'https://efts.sec.gov/' });
-      if (html && html.length > 50) break;
-    }
+  let html = '';
+  for (const variant of aliases) {
+    searchUrl = buildSecSearchUrl(variant, '8-K');
+    html = await fetchHtml(searchUrl, { Accept: 'application/json', Referer: 'https://efts.sec.gov/' });
+    if (html && html.length > 50) break;
   }
 
   // Track real 8-K filings (with accession numbers) for content fetching
@@ -1426,7 +1520,7 @@ export async function scrapeSEC(
     try {
       const json = JSON.parse(html);
       const hits = json?.hits?.hits || [];
-      for (const hit of hits.slice(0, 25)) {
+      for (const hit of hits.slice(0, 12)) {
         const src = hit._source;
         const description = src?.display_names?.[0] || src?.entity_name || '';
         const filingDate = src?.period_of_report || src?.file_date || '';
@@ -1464,7 +1558,7 @@ export async function scrapeSEC(
         });
 
         // Queue real 8-K filings for content fetching (limit to 2 most recent)
-        if (accNo && entityId && eightKsToFetch.length < 2) {
+        if (accNo && entityId && eightKsToFetch.length < 1) {
           eightKsToFetch.push({ entityId, accNo, date: filingDate, filingUrl });
         }
       }
@@ -1533,20 +1627,17 @@ export async function scrapeSEC(
   const oneYearAgo = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
   const today = new Date().toISOString().split('T')[0];
   let annualUrl = `https://efts.sec.gov/LATEST/search-index?q=%22${encodeURIComponent(companyName)}%22&forms=10-K,10-Q&dateRange=custom&startdt=${oneYearAgo}&enddt=${today}`;
-  let annualHtml = await fetchHtml(annualUrl, { Accept: 'application/json', Referer: 'https://efts.sec.gov/' });
-  if (!annualHtml || annualHtml.length < 50) {
-    for (const variant of edgarNameVariants(companyName)) {
-      if (variant === companyName) continue;
-      annualUrl = `https://efts.sec.gov/LATEST/search-index?q=%22${encodeURIComponent(variant)}%22&forms=10-K,10-Q&dateRange=custom&startdt=${oneYearAgo}&enddt=${today}`;
-      annualHtml = await fetchHtml(annualUrl, { Accept: 'application/json', Referer: 'https://efts.sec.gov/' });
-      if (annualHtml && annualHtml.length > 50) break;
-    }
+  let annualHtml = '';
+  for (const variant of aliases) {
+    annualUrl = `https://efts.sec.gov/LATEST/search-index?q=%22${encodeURIComponent(variant)}%22&forms=10-K,10-Q&dateRange=custom&startdt=${oneYearAgo}&enddt=${today}`;
+    annualHtml = await fetchHtml(annualUrl, { Accept: 'application/json', Referer: 'https://efts.sec.gov/' });
+    if (annualHtml && annualHtml.length > 50) break;
   }
   if (annualHtml) {
     try {
       const annualJson = JSON.parse(annualHtml);
       const annualHits = annualJson?.hits?.hits || [];
-      for (const hit of annualHits.slice(0, 4)) {
+      for (const hit of annualHits.slice(0, 2)) {
         const src = hit._source;
         const formType = src?.form_type || '10-K';
         const filingDate = src?.file_date || src?.period_of_report || '';
@@ -1566,7 +1657,9 @@ export async function scrapeSEC(
 
   // All Google News + Serper queries use disambiguated company query
   const secCtx = companyContext ? ` ${companyContext}` : '';
-  const secCompanyQ = `"${companyName}"${secCtx}`;
+  const secCompanyQ = aliases.length > 1
+    ? `("${aliases[0]}" OR "${aliases[1]}")${secCtx}`
+    : `"${companyName}"${secCtx}`;
 
   // Financial signals via Google News RSS
   const finQuery = `${secCompanyQ} revenue earnings profit financial results 2024 2025`;
@@ -1574,7 +1667,11 @@ export async function scrapeSEC(
   if (finRss && finRss.length > 500) {
     const $fin = cheerio.load(finRss, { xmlMode: true });
     $fin('item').each((_, el) => {
-      const combined = `${$fin(el).find('title').text()} ${$fin(el).find('description').text().replace(/<[^>]*>/g, '')}`;
+      const title = $fin(el).find('title').text();
+      const description = $fin(el).find('description').text().replace(/<[^>]*>/g, '');
+      const source = $fin(el).find('source').text();
+      if (!mentionsAnyCompanyAlias(aliases, title, description, source)) return;
+      const combined = `${title} ${description}`;
       const revM = combined.match(/revenue[^$\n]*\$\s*([\d.]+)\s*(billion|million|B|M)\b/gi);
       if (revM) data.financialSignals.push(...revM.slice(0, 2).map(m => m.trim().slice(0, 120)));
       const profitM = combined.match(/(?:profit|loss|net income)[^$\n]*\$\s*([\d.]+)\s*(?:billion|million)/gi);
@@ -1589,7 +1686,11 @@ export async function scrapeSEC(
   if (fundRss && fundRss.length > 500) {
     const $fund = cheerio.load(fundRss, { xmlMode: true });
     $fund('item').each((_, el) => {
-      const combined = `${$fund(el).find('title').text()} ${$fund(el).find('description').text().replace(/<[^>]*>/g, '')}`;
+      const title = $fund(el).find('title').text();
+      const description = $fund(el).find('description').text().replace(/<[^>]*>/g, '');
+      const source = $fund(el).find('source').text();
+      if (!mentionsAnyCompanyAlias(aliases, title, description, source)) return;
+      const combined = `${title} ${description}`;
       const fundM = combined.match(/(?:raised|funding|series|invested)[^$\n]*\$\s*([\d.]+)\s*(?:billion|million|B|M)[^\n]*/gi);
       if (fundM) data.fundingSignals.push(...fundM.slice(0, 2).map(m => m.trim().slice(0, 150)));
       const headM = combined.match(/(\d[\d,]+)\s+employees/gi);
@@ -1617,12 +1718,16 @@ export async function scrapeSEC(
   // WARN Act — federally mandated mass layoff notices (50+ employees, 60-day advance notice)
   const warnQueries = [
     // Quote the company name to force exact-match — prevents matching partial names on listing pages
-    `"${companyName}" WARN Act layoff notice site:warn.workforcegps.org OR site:edd.ca.gov OR site:labor.ny.gov`,
-    `"${companyName}" WARN Act "mass layoff" OR "plant closing" filing`,
+    `${secCompanyQ} WARN Act layoff notice site:warn.workforcegps.org OR site:edd.ca.gov OR site:labor.ny.gov`,
+    `${secCompanyQ} WARN Act "mass layoff" OR "plant closing" filing`,
   ];
   const [warnRes1, warnRes2] = await Promise.all(warnQueries.map(q => searchWeb(q, 5)));
   for (const r of [...warnRes1, ...warnRes2]) {
     const text = `${r.title} ${r.snippet}`;
+    const fromTrustedWarnSource =
+      /warn\.workforcegps\.org|edd\.ca\.gov|labor\.ny\.gov|mass\.gov|nj\.gov|pa\.gov|illinois\.gov|texas\.gov|sec\.gov|ir\./i.test(r.link);
+    if (!mentionsAnyCompanyAlias(aliases, r.title, r.snippet)) continue;
+    if (!fromTrustedWarnSource) continue;
     if (/warn act|mass layoff|plant closing|workforce reduction/i.test(text)) {
       const dateM = text.match(/\b(20\d\d)\b/);
       // Only extract a worker count if it appears within 80 characters of the company name
@@ -1644,6 +1749,7 @@ export async function scrapeSEC(
   const layoffsFyiRes = await searchWeb(`site:layoffs.fyi ${secCompanyQ} layoff`, 4);
   for (const r of layoffsFyiRes) {
     if (!r.link.includes('layoffs.fyi')) continue;
+    if (!mentionsAnyCompanyAlias(aliases, r.title, r.snippet)) continue;
     const text = `${r.title} ${r.snippet}`;
     const countM = text.match(/(\d[\d,]+)\s*(?:employees?|workers?|jobs?|people)/i);
     const dateM = text.match(/\b(20\d\d)\b/);
@@ -1654,7 +1760,8 @@ export async function scrapeSEC(
   // Crunchbase — use context to disambiguate (e.g. "Meridian AI" not "Meridian Apps")
   const cbResults = await searchWeb(`site:crunchbase.com ${secCompanyQ} funding investors`, 5);
   for (const r of cbResults) {
-    if (!r.link.includes('crunchbase.com')) continue;
+    if (!r.link.includes('crunchbase.com/organization/')) continue;
+    if (!mentionsAnyCompanyAlias(aliases, r.title, r.snippet, r.link)) continue;
     const text = `${r.title} ${r.snippet}`;
     const fundM = text.match(/\$[\d.]+\s*(?:B|M|billion|million)\s*(?:total funding|raised|in funding)/i);
     if (fundM) data.fundingSignals.push(`Crunchbase: ${fundM[0].trim()}`);
@@ -1664,77 +1771,15 @@ export async function scrapeSEC(
     if (invM) data.fundingSignals.push(`Investors: ${invM[1].trim().slice(0, 120)}`);
     sources.push({ url: r.link, type: 'crunchbase', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
   }
-
-  // Pitchbook via Serper
-  const pbResults = await searchWeb(`${secCompanyQ} site:pitchbook.com OR "pitchbook" ${secCompanyQ} funding employees`, 4);
-  for (const r of pbResults) {
-    const text = `${r.title} ${r.snippet}`;
-    const fundM = text.match(/\$[\d.]+\s*(?:B|M|billion|million)/i);
-    if (fundM) data.fundingSignals.push(`Pitchbook: ${r.title.slice(0, 80)} — ${fundM[0]}`);
-    if (r.link.includes('pitchbook.com')) {
-      sources.push({ url: r.link, type: 'crunchbase', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
-    }
-  }
-
-  // LinkedIn company page via Serper
-  const [liCompanyRes, liActivityRes] = await Promise.all([
-    searchWeb(`site:linkedin.com/company ${secCompanyQ} employees`, 4),
-    searchWeb(`${secCompanyQ} linkedin hiring layoffs headcount 2024 2025`, 4),
-  ]);
-  for (const r of [...liCompanyRes, ...liActivityRes]) {
-    const text = `${r.title} ${r.snippet}`;
-    const empM = text.match(/([\d,]+(?:-[\d,]+)?)\s*employees?/i);
-    if (empM) data.financialSignals.push(`LinkedIn: ~${empM[1]} employees`);
-    if (r.link.includes('linkedin.com/company')) {
-      sources.push({ url: r.link, type: 'sec', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
-    }
-  }
-
-  // BBB (Better Business Bureau) — complaint volume, rating, accreditation status
-  // Consumer-facing companies with scam/quality issues surface here immediately
-  const [bbbRes, ftcRes] = await Promise.all([
-    searchWeb(`site:bbb.org "${companyName}" complaints reviews rating`, 4),
-    searchWeb(`"${companyName}" site:ftc.gov OR "FTC" "${companyName}" enforcement complaint action`, 5),
-  ]);
-  for (const r of bbbRes) {
-    if (!r.link.includes('bbb.org')) continue;
-    const text = `${r.title} ${r.snippet}`;
-    const ratingM = text.match(/([A-F][+-]?)\s*(?:rating|rated)/i);
-    const complaintM = text.match(/([\d,]+)\s*complaints?/i);
-    const accredM = /accredited/i.test(text);
-    const signal = `BBB: ${companyName}${ratingM ? ` — ${ratingM[1]} rating` : ''}${complaintM ? `, ${complaintM[1]} complaints` : ''}${accredM ? ', accredited' : ', not listed as accredited'}`;
-    data.financialSignals.push(signal);
-    sources.push({ url: r.link, type: 'sec', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
-  }
-  for (const r of ftcRes) {
-    const text = `${r.title} ${r.snippet}`;
-    if (!/ftc\.gov|federal trade commission/i.test(r.link + text)) continue;
-    const dateM = text.match(/\b(20\d\d)\b/);
-    data.layoffSignals.push(`FTC action: ${r.title.slice(0, 80)}${dateM ? ` (${dateM[1]})` : ''} [URL:${r.link}] [SOURCE:FTC.gov]`);
-    sources.push({ url: r.link, type: 'sec', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
-  }
-
-  // General Google search — top 10 results for company name
-  // Catches: company website, Wikipedia, general press, Crunchbase overview, etc.
-  const generalResults = await searchWeb(secCompanyQ, 10);
-  for (const r of generalResults) {
-    const text = `${r.title} ${r.snippet}`;
-    // Extract any employee/funding signals not already captured
-    const empM = text.match(/([\d,]+(?:-[\d,]+)?)\s*employees?/i);
-    if (empM) data.financialSignals.push(`General: ~${empM[1]} employees`);
-    const fundM = text.match(/\$[\d.]+\s*(?:B|M|billion|million)\s*(?:raised|funding|valuation|series)/i);
-    if (fundM) data.fundingSignals.push(`General search: ${fundM[0].trim()}`);
-    sources.push({ url: r.link, type: 'sec', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
-  }
-
   // Parent company / subsidiary detection
   // Finds "acquired by", "division of", "subsidiary of", "owned by" relationships
   const parentResults = await searchWeb(
-    `"${companyName}" "subsidiary of" OR "division of" OR "acquired by" OR "owned by" OR "parent company"`,
+    `${secCompanyQ} "subsidiary of" OR "division of" OR "acquired by" OR "owned by" OR "parent company"`,
     6,
   );
   for (const r of parentResults) {
     const text = `${r.title} ${r.snippet}`;
+    if (!mentionsAnyCompanyAlias(aliases, r.title, r.snippet)) continue;
     // Match: "subsidiary of X", "division of X", "acquired by X", etc.
     const parentM = text.match(
       /(?:subsidiary of|division of|acquired by|owned by|parent company[:\s]+|part of)\s+([A-Z][A-Za-z0-9\s,&.']+?)(?:\.|,|\s+(?:in|for|on|with|and)\s|$)/i,
@@ -2120,9 +2165,7 @@ async function fetchCourtListener(companyName: string): Promise<CourtCase[]> {
     for (const r of batch) {
       const title = r.caseName ?? '';
       if (!title || seen.has(title)) continue;
-
-      // Only keep cases that actually name this company — filters out same-district unrelated cases
-      if (!title.toLowerCase().includes(nameAnchor)) continue;
+      if (!mentionsCompany(companyName, title, r.snippet)) continue;
 
       seen.add(title);
 
@@ -2229,7 +2272,6 @@ async function fetchNLRB(companyName: string): Promise<string[]> {
 
   const signals: string[] = [];
   const seen = new Set<string>();
-  const companyLower = companyName.toLowerCase();
 
   for (const r of [...nlrbSite, ...nlrbGeneral]) {
     if (seen.has(r.link)) continue;
@@ -2239,7 +2281,6 @@ async function fetchNLRB(companyName: string): Promise<string[]> {
     if (JUNK_DOMAINS.some(d => r.link.includes(d))) continue;
 
     const snippetLower = (r.snippet ?? '').toLowerCase();
-    const titleLower = r.title.toLowerCase();
     const fromNLRB = r.link.includes('nlrb.gov');
 
     const hasNLRBSignal =
@@ -2248,13 +2289,9 @@ async function fetchNLRB(companyName: string): Promise<string[]> {
       snippetLower.includes('unfair labor practice') ||
       (snippetLower.includes('labor board') && snippetLower.includes('union'));
 
-    // Non-NLRB.gov results must mention the company name to avoid cross-contamination
-    const mentionsCompany =
-      fromNLRB ||
-      snippetLower.includes(companyLower) ||
-      titleLower.includes(companyLower);
+    const mentionsCompanyName = mentionsCompany(companyName, r.title, r.snippet);
 
-    if (hasNLRBSignal && mentionsCompany) {
+    if (hasNLRBSignal && mentionsCompanyName) {
       signals.push(`${r.title}${r.snippet ? ` — ${r.snippet.slice(0, 120)}` : ''} [URL:${r.link}]`);
     }
   }
@@ -2274,7 +2311,6 @@ async function fetchOSHA(companyName: string): Promise<string[]> {
 
   const signals: string[] = [];
   const seen = new Set<string>();
-  const companyLower = companyName.toLowerCase();
 
   for (const r of [...oshaSite, ...oshaGeneral]) {
     if (seen.has(r.link)) continue;
@@ -2283,7 +2319,6 @@ async function fetchOSHA(companyName: string): Promise<string[]> {
     if (JUNK_DOMAINS.some(d => r.link.includes(d))) continue;
 
     const snippetLower = (r.snippet ?? '').toLowerCase();
-    const titleLower = r.title.toLowerCase();
     const fromOSHA = r.link.includes('osha.gov');
 
     const hasOSHASignal =
@@ -2292,12 +2327,12 @@ async function fetchOSHA(companyName: string): Promise<string[]> {
       snippetLower.includes('citation') ||
       (snippetLower.includes('violation') && snippetLower.includes('inspection'));
 
-    const mentionsCompany =
-      fromOSHA ||
-      snippetLower.includes(companyLower) ||
-      titleLower.includes(companyLower);
+    const mentionsCompanyName = mentionsCompany(companyName, r.title, r.snippet);
+    const recordSpecific =
+      /inspection|citation|penalt|fine|fatal|injury|illness|establishment/i.test(r.title) ||
+      /inspection|citation|penalt|fine|fatal|injury|illness|establishment/i.test(r.snippet ?? '');
 
-    if (hasOSHASignal && mentionsCompany) {
+    if (hasOSHASignal && mentionsCompanyName && (!fromOSHA || recordSpecific)) {
       signals.push(`${r.title}${r.snippet ? ` — ${r.snippet.slice(0, 120)}` : ''} [URL:${r.link}]`);
     }
   }
@@ -2453,3 +2488,9 @@ export async function scrapeEnrichment(
     sources,
   };
 }
+
+
+
+
+
+
