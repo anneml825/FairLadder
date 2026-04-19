@@ -124,6 +124,7 @@ BREVITY RULES (non-negotiable):
 - EDGAR FINANCIALS: When EDGAR structured financials are present, use them as the primary source for financialStability scoring — they override inferred signals. Growing revenue + positive net income = 8–9. Growing revenue + net loss (pre-profit) = 5–6. Declining revenue + net loss = 3–4. Headcount shrinking 10–20% YoY = redFlag (watch); >20% = redFlag (critical). Headcount growing 20%+ = greenFlag. Always cite "SEC EDGAR 10-K" as sourceName for these bullets.
 - COURT CASES: Federal employment/wage cases are concrete red flags. 1 recent case = watch; 2+ cases or any class action = critical. Flag them in redFlags with title, date, and one-sentence impact. Cite "CourtListener" as sourceName. Securities fraud cases lower financialStability by 1–2 points.
 - NLRB: Unfair labor practice complaints are a culture red flag. Active cases or multiple filings = redFlag (critical). Union election petitions signal significant employee dissatisfaction. Cite "NLRB" as sourceName.
+- H-1B LCA DATA: When present, these are DOL-certified wages the company legally committed to paying for sponsored workers — extremely reliable salary floor data. Use lca.wageMedian as a hard data point in salaryIntelligence and salaryAnalysis. Flag if candidate's target is well above or below LCA median. Always cite "DOL H-1B LCA" as sourceName.
 - OSHA: Safety violations and inspections are a critical flag for any role involving physical work or facilities. Multiple citations or willful violations = redFlag (critical). A single informal citation in a large company may be minor. Cite "OSHA" as sourceName. For desk/remote roles, mention only if violations are severe or widespread.
 - GITHUB: For companies claiming engineering-first or tech culture, a missing or dormant GitHub org is a yellow flag. Mention top languages as a tech stack signal in roleIntelligence. No GitHub presence is not a flag for non-tech companies.
 - NICHE ROLE / NO DATA: If BLS median is 'not found' AND Levels.fyi salary data is absent, read the job posting responsibilities and requirements carefully to identify the closest standard occupation that has market data (e.g. "develops Python ETL pipelines" → "Data Engineer"; "manages livestock rotation protocols" → "Agricultural Manager"). Use that adjacent role's salary range as the benchmark. Set salaryIntelligence.dataNote to: "No direct market data for [original title] — benchmarked against [adjacent role] based on job responsibilities". Do NOT silently invent numbers without this note.
@@ -286,6 +287,20 @@ OSHA SAFETY VIOLATIONS & INSPECTIONS:
 ${scrapedData.enrich?.oshaSignals?.length
   ? scrapedData.enrich.oshaSignals.join('\n')
   : 'No OSHA signals found'}
+
+H-1B LCA WAGE DATA (DOL-reported, legally certified wages):
+${(() => {
+  const lca = scrapedData.enrich?.lca;
+  if (!lca) return 'No LCA data (table not yet loaded or company not found)';
+  const fmt = (n: number) => `$${n.toLocaleString()}`;
+  const lines = [
+    `Sample size: ${lca.sampleSize} certified LCA filings`,
+    `Wage range: ${fmt(lca.wageMin)} – ${fmt(lca.wageMax)} | Median: ${fmt(lca.wageMedian)}`,
+    `Top roles filed:`,
+    ...lca.topRoles.map(r => `  ${r.title} (${r.count} filings, median ${fmt(r.medianWage)})`),
+  ];
+  return lines.join('\n');
+})()}
 
 OFFER: ${request.offerText || 'NOT PROVIDED — negotiationPlaybook and offerAnalysis MUST be null. Do not generate them.'}
 

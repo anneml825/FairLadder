@@ -27,7 +27,7 @@ export interface SerpResult {
 // Lazy singleton — only created when env vars are present
 let _client: SupabaseClient | null = null;
 
-function getClient(): SupabaseClient | null {
+export function getSupabaseClient(): SupabaseClient | null {
   if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) return null;
   if (!_client) {
     _client = createClient(
@@ -77,7 +77,7 @@ function getTTL(query: string): number | null {
 
 /** Return cached results if present and not stale, otherwise null. */
 export async function getCachedQuery(query: string): Promise<SerpResult[] | null> {
-  const client = getClient();
+  const client = getSupabaseClient();
   if (!client) return null;
 
   try {
@@ -103,7 +103,7 @@ export async function getCachedQuery(query: string): Promise<SerpResult[] | null
 
 /** Persist results for a query (upsert — overwrites stale entries). */
 export async function setCachedQuery(query: string, results: SerpResult[]): Promise<void> {
-  const client = getClient();
+  const client = getSupabaseClient();
   if (!client) return;
 
   try {

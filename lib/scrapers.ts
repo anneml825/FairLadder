@@ -13,8 +13,10 @@ import {
   CourtCase,
   GitHubData,
   EnrichmentData,
+  LCAData,
+  LCARecord,
 } from './types';
-import { getCachedQuery, setCachedQuery } from './cache';
+import { getCachedQuery, setCachedQuery, getSupabaseClient } from './cache';
 
 const HEADERS = {
   'User-Agent':
@@ -2076,21 +2078,78 @@ async function fetchOSHA(companyName: string): Promise<string[]> {
   return signals.slice(0, 5);
 }
 
+// ─── H-1B LCA ─────────────────────────────────────────────────────────────────
+// Queries pre-loaded DOL H-1B Labor Condition Application data from Supabase.
+// Returns aggregated wage stats for the company — null if table not populated.
+
+async function fetchLCA(companyName: string): Promise<LCAData | null> {
+  const client = getSupabaseClient();
+  if (!client) return null;
+
+  try {
+    const { data, error } = await client
+      .from('lca_data')
+      .select('job_title, annual_wage_from, annual_wage_to, city, state, decision_date')
+      .ilike('employer_name', `%${companyName}%`)
+      .not('annual_wage_from', 'is', null)
+      .order('decision_date', { ascending: false })
+      .limit(200);
+
+    if (error || !data?.length) return null;
+
+    const wages = data.map(r => r.annual_wage_from as number).sort((a, b) => a - b);
+    const mid = Math.floor(wages.length / 2);
+    const wageMedian = wages.length % 2 === 0
+      ? Math.round((wages[mid - 1] + wages[mid]) / 2)
+      : wages[mid];
+
+    const roleMap: Record<string, number[]> = {};
+    for (const r of data) {
+      const t = (r.job_title as string || '').trim();
+      if (!t) continue;
+      if (!roleMap[t]) roleMap[t] = [];
+      roleMap[t].push(r.annual_wage_from as number);
+    }
+    const topRoles = Object.entries(roleMap)
+      .sort((a, b) => b[1].length - a[1].length)
+      .slice(0, 5)
+      .map(([title, ws]) => {
+        const s = [...ws].sort((a, b) => a - b);
+        const m = Math.floor(s.length / 2);
+        return { title, count: ws.length, medianWage: s.length % 2 === 0 ? Math.round((s[m-1]+s[m])/2) : s[m] };
+      });
+
+    const recentRecords: LCARecord[] = data.slice(0, 10).map(r => ({
+      jobTitle: (r.job_title as string || '').trim(),
+      annualWageFrom: r.annual_wage_from as number,
+      annualWageTo: r.annual_wage_to as number | null,
+      city: (r.city as string || '').trim(),
+      state: (r.state as string || '').trim(),
+      decisionDate: r.decision_date as string || '',
+    }));
+
+    return { sampleSize: data.length, wageMin: wages[0], wageMedian, wageMax: wages[wages.length - 1], topRoles, recentRecords };
+  } catch {
+    return null;
+  }
+}
+
 // ─── ENRICHMENT ───────────────────────────────────────────────────────────────
-// Aggregates free-API enrichment: EDGAR + CourtListener + GitHub + NLRB + OSHA.
+// Aggregates free-API enrichment: EDGAR + CourtListener + GitHub + NLRB + OSHA + LCA.
 
 export async function scrapeEnrichment(
   companyName: string,
 ): Promise<{ data: EnrichmentData; sources: ScrapedSource[] }> {
   const sources: ScrapedSource[] = [];
 
-  // All five run in parallel
-  const [companyFacts, courtCases, github, nlrbSignals, oshaSignals] = await Promise.all([
+  // All six run in parallel
+  const [companyFacts, courtCases, github, nlrbSignals, oshaSignals, lca] = await Promise.all([
     fetchEdgarFacts(companyName),
     fetchCourtListener(companyName),
     fetchGitHub(companyName),
     fetchNLRB(companyName),
     fetchOSHA(companyName),
+    fetchLCA(companyName),
   ]);
 
   if (companyFacts?.isPublic) {
@@ -2146,6 +2205,15 @@ export async function scrapeEnrichment(
     }
   }
 
+  if (lca) {
+    sources.push({
+      url: 'https://www.dol.gov/agencies/eta/foreign-labor/performance',
+      type: 'sec',
+      title: `${companyName} — H-1B LCA Wage Data (DOL)`,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   return {
     data: {
       companyFacts: companyFacts ?? undefined,
@@ -2153,6 +2221,7 @@ export async function scrapeEnrichment(
       github: github ?? undefined,
       nlrbSignals: nlrbSignals.length > 0 ? nlrbSignals : undefined,
       oshaSignals: oshaSignals.length > 0 ? oshaSignals : undefined,
+      lca: lca ?? undefined,
     },
     sources,
   };

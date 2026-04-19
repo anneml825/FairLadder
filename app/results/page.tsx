@@ -437,6 +437,43 @@ export default function ResultsPage() {
                 </div>
               )}
 
+              {/* H-1B LCA wage data */}
+              {result.rawData?.enrichment?.lca && (() => {
+                const lca = result.rawData.enrichment!.lca!;
+                const fmt = (n: number) => `$${n.toLocaleString()}`;
+                return (
+                  <div className="mt-4 pt-4 border-t border-[#1e2736]">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="text-xs text-[#8892a4] uppercase tracking-wide font-medium">H-1B LCA Wages (DOL Certified)</div>
+                      <span className="text-[10px] text-[#4a5568]">{lca.sampleSize} filings</span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 mb-3">
+                      {[
+                        { label: 'Min', value: fmt(lca.wageMin) },
+                        { label: 'Median', value: fmt(lca.wageMedian) },
+                        { label: 'Max', value: fmt(lca.wageMax) },
+                      ].map(({ label, value }) => (
+                        <div key={label} className="p-2 rounded-xl bg-[#0d1117]/50 border border-[#1e2736] text-center">
+                          <div className="text-[10px] text-[#4a5568] mb-1">{label}</div>
+                          <div className="text-xs font-mono text-[#e2e8f0] font-semibold">{value}</div>
+                        </div>
+                      ))}
+                    </div>
+                    {lca.topRoles.length > 0 && (
+                      <div className="space-y-1">
+                        {lca.topRoles.map((r, i) => (
+                          <div key={i} className="flex items-center justify-between text-[11px] py-1 border-b border-[#1e2736]/50">
+                            <span className="text-[#8892a4] truncate mr-2">{r.title}</span>
+                            <span className="text-[#e2e8f0] font-mono flex-shrink-0">{fmt(r.medianWage)} <span className="text-[#4a5568]">×{r.count}</span></span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <p className="text-[10px] text-[#4a5568] mt-2">Source: DOL OFLC H-1B disclosure data</p>
+                  </div>
+                );
+              })()}
+
               {/* GitHub presence */}
               {result.rawData?.enrichment?.github?.orgHandle && (
                 <div className="mt-4 pt-4 border-t border-[#1e2736]">

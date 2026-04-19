@@ -28,12 +28,31 @@ export interface GitHubData {
   totalStars?: number;
 }
 
+export interface LCARecord {
+  jobTitle: string;
+  annualWageFrom: number;
+  annualWageTo: number | null;
+  city: string;
+  state: string;
+  decisionDate: string;
+}
+
+export interface LCAData {
+  sampleSize: number;
+  wageMin: number;
+  wageMedian: number;
+  wageMax: number;
+  topRoles: Array<{ title: string; count: number; medianWage: number }>;
+  recentRecords: LCARecord[];
+}
+
 export interface EnrichmentData {
   companyFacts?: CompanyFactsData;
   courtCases?: CourtCase[];
   github?: GitHubData;
   nlrbSignals?: string[];
   oshaSignals?: string[];
+  lca?: LCAData;
 }
 
 export interface AnalysisRequest {
