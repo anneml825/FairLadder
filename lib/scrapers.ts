@@ -11,6 +11,7 @@ import {
   ScrapedSource,
   CompanyFactsData,
   CourtCase,
+  GitHubData,
   EnrichmentData,
 } from './types';
 import { getCachedQuery, setCachedQuery } from './cache';
@@ -1952,19 +1953,84 @@ async function fetchCourtListener(companyName: string): Promise<CourtCase[]> {
   return cases.slice(0, 8);
 }
 
+// ─── GITHUB ───────────────────────────────────────────────────────────────────
+// Looks up a company's GitHub org to assess engineering culture signals.
+// Uses GITHUB_KEY env var for higher rate limit (5k/hr vs 60/hr). Optional.
+
+async function fetchGitHub(companyName: string): Promise<GitHubData | null> {
+  try {
+    const headers: Record<string, string> = {
+      'User-Agent': 'FairLadder.ai',
+      Accept: 'application/vnd.github.v3+json',
+    };
+    if (process.env.GITHUB_KEY) headers['Authorization'] = `token ${process.env.GITHUB_KEY}`;
+
+    // Search for matching org
+    const searchRes = await axios.get('https://api.github.com/search/users', {
+      params: { q: `${companyName} type:org`, per_page: 5 },
+      headers,
+      timeout: 8000,
+    });
+
+    const orgs: Array<{ login: string }> = searchRes.data?.items ?? [];
+    if (!orgs.length) return null;
+
+    // Find best match by normalizing names
+    const norm = (s: string) => s.toLowerCase().replace(/[\s\-_.]/g, '');
+    const cn = norm(companyName);
+    const bestOrg =
+      orgs.find(o => norm(o.login) === cn) ??
+      orgs.find(o => norm(o.login).includes(cn.slice(0, 5)) || cn.includes(norm(o.login).slice(0, 5))) ??
+      orgs[0];
+
+    if (!bestOrg) return null;
+
+    // Fetch org info + recent repos in parallel
+    const [orgRes, reposRes] = await Promise.all([
+      axios.get(`https://api.github.com/orgs/${bestOrg.login}`, { headers, timeout: 6000 }),
+      axios.get(`https://api.github.com/orgs/${bestOrg.login}/repos`, {
+        params: { sort: 'pushed', per_page: 30, type: 'public' },
+        headers,
+        timeout: 6000,
+      }),
+    ]);
+
+    type GHRepo = { pushed_at: string; language?: string; stargazers_count: number };
+    const repos: GHRepo[] = reposRes.data ?? [];
+    const cutoff = new Date(Date.now() - 90 * 86_400_000).toISOString();
+
+    const langCounts: Record<string, number> = {};
+    for (const r of repos) {
+      if (r.language) langCounts[r.language] = (langCounts[r.language] ?? 0) + 1;
+    }
+
+    return {
+      orgHandle: bestOrg.login,
+      publicRepos: orgRes.data?.public_repos ?? repos.length,
+      recentlyActive: repos.some(r => r.pushed_at > cutoff),
+      lastPushDate: repos[0]?.pushed_at?.slice(0, 10),
+      topLanguages: Object.entries(langCounts).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([l]) => l),
+      totalStars: repos.reduce((s, r) => s + (r.stargazers_count ?? 0), 0),
+    };
+  } catch {
+    return null;
+  }
+}
+
 // ─── ENRICHMENT ───────────────────────────────────────────────────────────────
-// Aggregates free-API enrichment. Currently: EDGAR financials + CourtListener.
-// GitHub, NLRB, OSHA will be added in subsequent sessions.
+// Aggregates free-API enrichment. Currently: EDGAR + CourtListener + GitHub.
+// NLRB, OSHA will be added in subsequent sessions.
 
 export async function scrapeEnrichment(
   companyName: string,
 ): Promise<{ data: EnrichmentData; sources: ScrapedSource[] }> {
   const sources: ScrapedSource[] = [];
 
-  // Both run in parallel — neither depends on the other
-  const [companyFacts, courtCases] = await Promise.all([
+  // All three run in parallel
+  const [companyFacts, courtCases, github] = await Promise.all([
     fetchEdgarFacts(companyName),
     fetchCourtListener(companyName),
+    fetchGitHub(companyName),
   ]);
 
   if (companyFacts?.isPublic) {
@@ -1987,10 +2053,20 @@ export async function scrapeEnrichment(
     }
   }
 
+  if (github?.orgHandle) {
+    sources.push({
+      url: `https://github.com/${github.orgHandle}`,
+      type: 'sec',
+      title: `${companyName} — GitHub`,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   return {
     data: {
       companyFacts: companyFacts ?? undefined,
       courtCases: courtCases.length > 0 ? courtCases : undefined,
+      github: github ?? undefined,
     },
     sources,
   };

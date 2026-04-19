@@ -375,6 +375,46 @@ export default function ResultsPage() {
                 );
               })()}
 
+              {/* GitHub presence */}
+              {result.rawData?.enrichment?.github?.orgHandle && (
+                <div className="mt-4 pt-4 border-t border-[#1e2736]">
+                  <div className="text-xs text-[#8892a4] uppercase tracking-wide mb-3 font-medium">GitHub Presence</div>
+                  <div className="flex items-start gap-3 p-3 rounded-xl bg-[#0d1117]/50 border border-[#1e2736]">
+                    <span className="text-lg flex-shrink-0">⌥</span>
+                    <div className="flex-1 min-w-0">
+                      <a
+                        href={`https://github.com/${result.rawData.enrichment.github.orgHandle}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-indigo-400 hover:text-indigo-300 font-mono transition-colors"
+                      >
+                        github.com/{result.rawData.enrichment.github.orgHandle}
+                      </a>
+                      <div className="flex flex-wrap gap-3 mt-2 text-xs text-[#8892a4]">
+                        {result.rawData.enrichment.github.publicRepos !== undefined && (
+                          <span>{result.rawData.enrichment.github.publicRepos} public repos</span>
+                        )}
+                        <span className={result.rawData.enrichment.github.recentlyActive ? 'text-emerald-400' : 'text-amber-400'}>
+                          {result.rawData.enrichment.github.recentlyActive ? '● Active (90d)' : '● Dormant (90d+)'}
+                        </span>
+                        {result.rawData.enrichment.github.totalStars !== undefined && (
+                          <span>★ {result.rawData.enrichment.github.totalStars.toLocaleString()} stars</span>
+                        )}
+                      </div>
+                      {result.rawData.enrichment.github.topLanguages?.length ? (
+                        <div className="flex flex-wrap gap-1.5 mt-2">
+                          {result.rawData.enrichment.github.topLanguages.map((lang, i) => (
+                            <span key={i} className="text-[10px] px-2 py-0.5 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-300">
+                              {lang}
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* Federal court cases */}
               {result.rawData?.enrichment?.courtCases && result.rawData.enrichment.courtCases.length > 0 && (
                 <div className="mt-4 pt-4 border-t border-[#1e2736]">

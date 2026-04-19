@@ -19,9 +19,19 @@ export interface CourtCase {
   snippet?: string;
 }
 
+export interface GitHubData {
+  orgHandle?: string;
+  publicRepos?: number;
+  recentlyActive?: boolean;
+  lastPushDate?: string;
+  topLanguages?: string[];
+  totalStars?: number;
+}
+
 export interface EnrichmentData {
   companyFacts?: CompanyFactsData;
   courtCases?: CourtCase[];
+  github?: GitHubData;
 }
 
 export interface AnalysisRequest {
