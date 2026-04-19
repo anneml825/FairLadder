@@ -2017,20 +2017,50 @@ async function fetchGitHub(companyName: string): Promise<GitHubData | null> {
   }
 }
 
+// ─── NLRB ─────────────────────────────────────────────────────────────────────
+// Searches NLRB case database for unfair labor practice complaints.
+// Uses Serper — no additional API key needed.
+
+async function fetchNLRB(companyName: string): Promise<string[]> {
+  const [nlrbSite, nlrbGeneral] = await Promise.all([
+    searchWeb(`site:nlrb.gov "${companyName}"`, 5),
+    searchWeb(`"${companyName}" NLRB "unfair labor practice" OR "union election" OR "labor board"`, 4),
+  ]);
+
+  const signals: string[] = [];
+  const seen = new Set<string>();
+
+  for (const r of [...nlrbSite, ...nlrbGeneral]) {
+    if (seen.has(r.link)) continue;
+    seen.add(r.link);
+    const isRelevant =
+      r.link.includes('nlrb.gov') ||
+      r.snippet?.toLowerCase().includes('nlrb') ||
+      r.snippet?.toLowerCase().includes('unfair labor') ||
+      r.snippet?.toLowerCase().includes('labor board');
+    if (isRelevant) {
+      signals.push(`${r.title}${r.snippet ? ` — ${r.snippet.slice(0, 120)}` : ''} [URL:${r.link}]`);
+    }
+  }
+
+  return signals.slice(0, 6);
+}
+
 // ─── ENRICHMENT ───────────────────────────────────────────────────────────────
-// Aggregates free-API enrichment. Currently: EDGAR + CourtListener + GitHub.
-// NLRB, OSHA will be added in subsequent sessions.
+// Aggregates free-API enrichment. Currently: EDGAR + CourtListener + GitHub + NLRB.
+// OSHA will be added next.
 
 export async function scrapeEnrichment(
   companyName: string,
 ): Promise<{ data: EnrichmentData; sources: ScrapedSource[] }> {
   const sources: ScrapedSource[] = [];
 
-  // All three run in parallel
-  const [companyFacts, courtCases, github] = await Promise.all([
+  // All four run in parallel
+  const [companyFacts, courtCases, github, nlrbSignals] = await Promise.all([
     fetchEdgarFacts(companyName),
     fetchCourtListener(companyName),
     fetchGitHub(companyName),
+    fetchNLRB(companyName),
   ]);
 
   if (companyFacts?.isPublic) {
@@ -2062,11 +2092,24 @@ export async function scrapeEnrichment(
     });
   }
 
+  for (const signal of nlrbSignals) {
+    const urlMatch = signal.match(/\[URL:(.*?)\]/);
+    if (urlMatch?.[1]) {
+      sources.push({
+        url: urlMatch[1],
+        type: 'sec',
+        title: signal.split(' — ')[0].replace(/\[URL:.*?\]/, '').trim().slice(0, 120),
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }
+
   return {
     data: {
       companyFacts: companyFacts ?? undefined,
       courtCases: courtCases.length > 0 ? courtCases : undefined,
       github: github ?? undefined,
+      nlrbSignals: nlrbSignals.length > 0 ? nlrbSignals : undefined,
     },
     sources,
   };

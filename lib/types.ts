@@ -32,6 +32,7 @@ export interface EnrichmentData {
   companyFacts?: CompanyFactsData;
   courtCases?: CourtCase[];
   github?: GitHubData;
+  nlrbSignals?: string[];
 }
 
 export interface AnalysisRequest {

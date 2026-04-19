@@ -123,6 +123,7 @@ BREVITY RULES (non-negotiable):
 - SALARY ANALYSIS FIELD: salaryIntelligence.analysis should be one plain-English sentence summarising the candidate's salary position, e.g. "Your target of $145k sits at the 68th percentile for this role in Seattle — above market median but well within range." Include the target dollar amount, percentile, and a qualitative take. Max 30 words.
 - EDGAR FINANCIALS: When EDGAR structured financials are present, use them as the primary source for financialStability scoring — they override inferred signals. Growing revenue + positive net income = 8–9. Growing revenue + net loss (pre-profit) = 5–6. Declining revenue + net loss = 3–4. Headcount shrinking 10–20% YoY = redFlag (watch); >20% = redFlag (critical). Headcount growing 20%+ = greenFlag. Always cite "SEC EDGAR 10-K" as sourceName for these bullets.
 - COURT CASES: Federal employment/wage cases are concrete red flags. 1 recent case = watch; 2+ cases or any class action = critical. Flag them in redFlags with title, date, and one-sentence impact. Cite "CourtListener" as sourceName. Securities fraud cases lower financialStability by 1–2 points.
+- NLRB: Unfair labor practice complaints are a culture red flag. Active cases or multiple filings = redFlag (critical). Union election petitions signal significant employee dissatisfaction. Cite "NLRB" as sourceName.
 - GITHUB: For companies claiming engineering-first or tech culture, a missing or dormant GitHub org is a yellow flag. Mention top languages as a tech stack signal in roleIntelligence. No GitHub presence is not a flag for non-tech companies.
 - NICHE ROLE / NO DATA: If BLS median is 'not found' AND Levels.fyi salary data is absent, read the job posting responsibilities and requirements carefully to identify the closest standard occupation that has market data (e.g. "develops Python ETL pipelines" → "Data Engineer"; "manages livestock rotation protocols" → "Agricultural Manager"). Use that adjacent role's salary range as the benchmark. Set salaryIntelligence.dataNote to: "No direct market data for [original title] — benchmarked against [adjacent role] based on job responsibilities". Do NOT silently invent numbers without this note.
 
@@ -265,6 +266,11 @@ ${(() => {
     gh.totalStars !== undefined ? `Total stars: ${gh.totalStars.toLocaleString()}` : '',
   ].filter(Boolean).join(' | ');
 })()}
+
+NLRB LABOR COMPLAINTS:
+${scrapedData.enrich?.nlrbSignals?.length
+  ? scrapedData.enrich.nlrbSignals.join('\n')
+  : 'No NLRB signals found'}
 
 FEDERAL COURT CASES (CourtListener — past 5 years):
 ${(() => {
