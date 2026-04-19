@@ -126,14 +126,18 @@ export async function scrapeGoogleNews(
   }
 
   // Keyword that must appear in title to keep the article — prevents off-topic noise.
-  // Take the longest word in the company name as the anchor (e.g. "StoneX" from "StoneX Group").
   const companyWords = companyName.split(/\s+/).filter(w => w.length >= 4);
   const anchor = companyWords.sort((a, b) => b.length - a.length)[0]?.toLowerCase() || companyName.toLowerCase();
 
-  for (const q of queries) {
-    const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=en-US&gl=US&ceid=US:en`;
-    const xml = await fetchHtml(rssUrl);
-    if (!xml) continue;
+  // Fetch all RSS feeds in parallel (was sequential — caused timeouts)
+  const xmlResults = await Promise.all(
+    queries.map(q =>
+      fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=en-US&gl=US&ceid=US:en`)
+    )
+  );
+
+  for (const xml of xmlResults) {
+    if (!xml || xml.length < 100) continue;
 
     const $ = cheerio.load(xml, { xmlMode: true });
     $('item').each((_, el) => {
@@ -144,8 +148,6 @@ export async function scrapeGoogleNews(
       const description = $(el).find('description').text().replace(/<[^>]*>/g, '').trim().slice(0, 300);
 
       if (!title || !link || seenUrls.has(link)) return;
-
-      // Only keep articles where the company name appears in the title (filters tangential noise)
       if (!title.toLowerCase().includes(anchor)) return;
 
       seenUrls.add(link);
@@ -247,7 +249,10 @@ export async function scrapeReddit(
     `site:reddit.com ${companyQ} employees culture work experience`,
     `site:reddit.com ${companyQ} salary compensation pay`,
     `site:reddit.com ${companyQ} interview hiring layoffs`,
-    `${companyQ} reddit employees culture review`,               // no site: — catches more results
+    `${companyQ} reddit employees culture review`,
+    // Unquoted fallbacks — find "StoneX Group" threads when user typed "StoneX"
+    `site:reddit.com ${companyName} employees culture work`,
+    `${companyName} reddit salary work experience review`,
     role && role.length < 60
       ? `site:reddit.com ${companyQ} "${role}"`
       : `${companyQ} reddit salary career`,
@@ -460,6 +465,9 @@ export async function scrapeGlassdoor(
   const glassdoorSearches = [
     `${companyQ} glassdoor reviews rating culture employees`,
     `site:glassdoor.com ${companyQ} reviews`,
+    // Unquoted fallback — catches "StoneX Group" when user typed "StoneX"
+    `site:glassdoor.com ${companyName} reviews employees`,
+    `${companyName} glassdoor rating reviews 2024`,
   ];
   let glassdoorDirectUrl: string | null = null;
 
@@ -1293,12 +1301,22 @@ export async function scrapeSEC(
     financialSignals: [],
   };
 
-  const searchUrl = `https://efts.sec.gov/LATEST/search-index?q=%22${encodeURIComponent(companyName)}%22&dateRange=custom&startdt=${new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]}&enddt=${new Date().toISOString().split('T')[0]}&forms=8-K`;
+  // Try the exact name first; if no results, fall back to name variants
+  const buildSecSearchUrl = (name: string, forms: string) =>
+    `https://efts.sec.gov/LATEST/search-index?q=%22${encodeURIComponent(name)}%22&dateRange=custom&startdt=${new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]}&enddt=${new Date().toISOString().split('T')[0]}&forms=${forms}`;
 
-  const html = await fetchHtml(searchUrl, {
-    Accept: 'application/json',
-    Referer: 'https://efts.sec.gov/',
-  });
+  let searchUrl = buildSecSearchUrl(companyName, '8-K');
+  let html = await fetchHtml(searchUrl, { Accept: 'application/json', Referer: 'https://efts.sec.gov/' });
+
+  // If no results with exact name, try name variants (handles "StoneX" → "StoneX Group Inc.")
+  if (!html || html.length < 50) {
+    for (const variant of edgarNameVariants(companyName)) {
+      if (variant === companyName) continue;
+      searchUrl = buildSecSearchUrl(variant, '8-K');
+      html = await fetchHtml(searchUrl, { Accept: 'application/json', Referer: 'https://efts.sec.gov/' });
+      if (html && html.length > 50) break;
+    }
+  }
 
   // Track real 8-K filings (with accession numbers) for content fetching
   const eightKsToFetch: Array<{ entityId: string; accNo: string; date: string; filingUrl: string }> = [];
@@ -1413,8 +1431,16 @@ export async function scrapeSEC(
   // Annual/Quarterly filings (10-K, 10-Q) — key for public companies
   const oneYearAgo = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
   const today = new Date().toISOString().split('T')[0];
-  const annualUrl = `https://efts.sec.gov/LATEST/search-index?q=%22${encodeURIComponent(companyName)}%22&forms=10-K,10-Q&dateRange=custom&startdt=${oneYearAgo}&enddt=${today}`;
-  const annualHtml = await fetchHtml(annualUrl, { Accept: 'application/json', Referer: 'https://efts.sec.gov/' });
+  let annualUrl = `https://efts.sec.gov/LATEST/search-index?q=%22${encodeURIComponent(companyName)}%22&forms=10-K,10-Q&dateRange=custom&startdt=${oneYearAgo}&enddt=${today}`;
+  let annualHtml = await fetchHtml(annualUrl, { Accept: 'application/json', Referer: 'https://efts.sec.gov/' });
+  if (!annualHtml || annualHtml.length < 50) {
+    for (const variant of edgarNameVariants(companyName)) {
+      if (variant === companyName) continue;
+      annualUrl = `https://efts.sec.gov/LATEST/search-index?q=%22${encodeURIComponent(variant)}%22&forms=10-K,10-Q&dateRange=custom&startdt=${oneYearAgo}&enddt=${today}`;
+      annualHtml = await fetchHtml(annualUrl, { Accept: 'application/json', Referer: 'https://efts.sec.gov/' });
+      if (annualHtml && annualHtml.length > 50) break;
+    }
+  }
   if (annualHtml) {
     try {
       const annualJson = JSON.parse(annualHtml);
@@ -1820,27 +1846,84 @@ export async function findJobPostingUrl(companyName: string, role: string): Prom
 // Fetches structured annual financials directly from SEC EDGAR (free, no auth).
 // Returns null if company is not found or not public.
 
+// Strip common legal suffixes so "StoneX" finds "StoneX Group Inc."
+function edgarNameVariants(name: string): string[] {
+  const stripped = name.replace(/\s+(Inc\.?|Corp\.?|LLC\.?|Ltd\.?|Group\s+Inc\.?|Group\.?|Co\.?|Holdings?\.?|Incorporated|Corporation|Limited)$/i, '').trim();
+  const variants = new Set([name, stripped]);
+  // Also try without trailing punctuation
+  variants.add(name.replace(/[.,]+$/, '').trim());
+  return [...variants].filter(v => v.length > 2);
+}
+
+async function findEdgarCIK(companyName: string, ua: string): Promise<string | null> {
+  // Try EDGAR company search API (returns entity list, not document search)
+  try {
+    const res = await axios.get(
+      `https://efts.sec.gov/LATEST/search-index?q=%22${encodeURIComponent(companyName)}%22&forms=10-K&dateRange=custom&startdt=2018-01-01`,
+      { headers: { 'User-Agent': ua, Accept: 'application/json' }, timeout: 8000 },
+    );
+    const hits: Array<{ _source?: Record<string, unknown> }> = res.data?.hits?.hits ?? [];
+    if (hits.length) {
+      const src = hits[0]?._source ?? {};
+      let cik = String(src.entity_id ?? '').replace(/^CIK/i, '');
+      if (!cik) {
+        const names: string[] = (src.display_names as string[]) ?? [];
+        const m = names[0]?.match(/\((\d{7,10})\)/);
+        if (m) cik = m[1];
+      }
+      if (cik) return cik;
+    }
+  } catch { /* fall through */ }
+
+  // Fallback: try name variants with unquoted search
+  for (const variant of edgarNameVariants(companyName)) {
+    if (variant === companyName) continue; // already tried above
+    try {
+      const res = await axios.get(
+        `https://efts.sec.gov/LATEST/search-index?q=%22${encodeURIComponent(variant)}%22&forms=10-K&dateRange=custom&startdt=2018-01-01`,
+        { headers: { 'User-Agent': ua, Accept: 'application/json' }, timeout: 6000 },
+      );
+      const hits: Array<{ _source?: Record<string, unknown> }> = res.data?.hits?.hits ?? [];
+      if (hits.length) {
+        const src = hits[0]?._source ?? {};
+        let cik = String(src.entity_id ?? '').replace(/^CIK/i, '');
+        if (!cik) {
+          const names: string[] = (src.display_names as string[]) ?? [];
+          const m = names[0]?.match(/\((\d{7,10})\)/);
+          if (m) cik = m[1];
+        }
+        if (cik) return cik;
+      }
+    } catch { /* skip */ }
+  }
+
+  // Last resort: EDGAR company name search endpoint
+  try {
+    const res = await axios.get(
+      `https://efts.sec.gov/LATEST/search-index?q=${encodeURIComponent(companyName)}&forms=10-K&dateRange=custom&startdt=2020-01-01`,
+      { headers: { 'User-Agent': ua, Accept: 'application/json' }, timeout: 6000 },
+    );
+    const hits: Array<{ _source?: Record<string, unknown> }> = res.data?.hits?.hits ?? [];
+    for (const hit of hits.slice(0, 3)) {
+      const src = hit._source ?? {};
+      const names: string[] = (src.display_names as string[]) ?? [];
+      const entityName = String(src.entity_name ?? names[0] ?? '').toLowerCase();
+      if (entityName.includes(companyName.toLowerCase())) {
+        let cik = String(src.entity_id ?? '').replace(/^CIK/i, '');
+        if (!cik) { const m = names[0]?.match(/\((\d{7,10})\)/); if (m) cik = m[1]; }
+        if (cik) return cik;
+      }
+    }
+  } catch { /* skip */ }
+
+  return null;
+}
+
 async function fetchEdgarFacts(companyName: string): Promise<CompanyFactsData | null> {
   const EDGAR_UA = 'FairLadder.ai hello@fairladder.ai';
   try {
-    // Step 1: Find CIK via EDGAR full-text search (10-K filings only)
-    const searchRes = await axios.get(
-      `https://efts.sec.gov/LATEST/search-index?q=%22${encodeURIComponent(companyName)}%22&forms=10-K&dateRange=custom&startdt=2018-01-01`,
-      { headers: { 'User-Agent': EDGAR_UA, Accept: 'application/json' }, timeout: 8000 },
-    );
-
-    const hits: Array<{ _source?: Record<string, unknown> }> = searchRes.data?.hits?.hits ?? [];
-    if (!hits.length) return { isPublic: false };
-
-    const source = hits[0]?._source ?? {};
-
-    // Extract CIK — try entity_id field first, then parse from display_names
-    let cikStr = String(source.entity_id ?? '').replace(/^CIK/i, '');
-    if (!cikStr) {
-      const names: string[] = (source.display_names as string[]) ?? [];
-      const m = names[0]?.match(/\((\d{7,10})\)/);
-      if (m) cikStr = m[1];
-    }
+    // Step 1: Find CIK with fuzzy name matching + fallbacks
+    const cikStr = await findEdgarCIK(companyName, EDGAR_UA);
     if (!cikStr) return { isPublic: false };
 
     const paddedCik = cikStr.padStart(10, '0');

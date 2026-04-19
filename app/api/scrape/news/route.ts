@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { scrapeGoogleNews } from '@/lib/scrapers';
 
 export const runtime = 'nodejs';
-export const maxDuration = 10;
+export const maxDuration = 20;
 
 export async function POST(req: NextRequest) {
   const { companyName, role, companyContext } = await req.json();
