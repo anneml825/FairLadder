@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { scrapeJobPosting, findJobPostingUrl } from '@/lib/scrapers';
 
 export const runtime = 'nodejs';
-export const maxDuration = 15;
+export const maxDuration = 25;
 
 export async function POST(req: NextRequest) {
   const { url, companyName, role, companyContext, jobText } = await req.json();

@@ -259,7 +259,7 @@ export default function AnalyzePage() {
         ),
 
         fetchStep<{ data: EnrichmentData; sources: ScrapedSource[] }>(
-          'enrich', '/api/scrape/enrich', { companyName: request.companyName }, signal,
+          'enrich', '/api/scrape/enrich', { companyName: request.companyName, companyContext }, signal,
         ),
       ]);
 

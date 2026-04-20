@@ -143,7 +143,7 @@ function isEntityNameClash(companyName: string, ...parts: Array<string | undefin
   if (idx === -1) return false;
   // Get the word immediately after the company name in the text
   const after = combined.slice(idx + name.length).replace(/^[^a-z]+/, '');
-  const differentEntityWords = /^(restaurant|café|cafe|bar|hotel|school|college|university|church|hospital|medical|clinic|diner|bakery|brewery|pub|tavern|lounge|salon|spa|gym|fitness|boutique|store|market|motors|auto)/;
+  const differentEntityWords = /^(restaurant|café|cafe|bar|hotel|school|college|university|church|hospital|medical|clinic|diner|bakery|brewery|pub|tavern|lounge|salon|spa|gym|fitness|boutique|store|market|motors|auto|oil|gas|robotics|hockey|nhl|sports?)/;
   if (!differentEntityWords.test(after)) return false;
   // Only flag as a clash if the original company name doesn't contain these industry words
   return !differentEntityWords.test(companyName.toLowerCase());
@@ -325,6 +325,10 @@ async function fetchOfficialSiteSignals(
   return found;
 }
 
+function dedupeSources<T extends { url: string }>(items: T[]): T[] {
+  return [...new Map(items.map(item => [item.url, item])).values()];
+}
+
 function hasCoreGlassdoorSnapshot(data: GlassdoorData): boolean {
   return Boolean(
     data.overallRating &&
@@ -365,11 +369,11 @@ async function searchSerp(query: string, num = 10): Promise<SerpResult[]> {
   }
 }
 
-async function fetchHtml(url: string, extraHeaders: Record<string, string> = {}): Promise<string> {
+async function fetchHtml(url: string, extraHeaders: Record<string, string> = {}, timeoutMs = 15000): Promise<string> {
   try {
     const res = await axios.get(url, {
       headers: { ...HEADERS, ...extraHeaders },
-      timeout: 15000,
+      timeout: timeoutMs,
       maxRedirects: 5,
     });
     return res.data as string;
@@ -1114,21 +1118,32 @@ function extractSalaries(text: string): number[] {
 export async function scrapeLevels(
   companyName: string,
   role: string,
-  location: string
+  location: string,
+  companyContext?: string,
 ): Promise<{ data: LevelsData; sources: ScrapedSource[] }> {
   const sources: ScrapedSource[] = [];
   const data: LevelsData = { targetRoleSalaries: [], comparableSalaries: [] };
+  const aliases = getCompanyAliases(companyName, companyContext);
+  const companyQuery = uniqueNonEmpty([companyName, companyContext]).join(' ');
 
   // Primary: Serper.dev / SerpAPI web search for salary data — snippets from salary sites
   // contain actual dollar figures unlike news articles
   const serpSalaryQueries = [
-    `"${companyName}" "${role}" salary compensation base pay`,
-    `"${role}" average salary ${location} 2024 2025`,
-    `"${role}" salary range levels compensation`,
+    `"${companyName}" "${role}" ${companyContext || ''} salary compensation base pay`,
+    `"${role}" average salary ${location} 2025 2026`,
+    `"${role}" salary range levels compensation ${companyContext || ''}`,
   ];
-  for (const q of serpSalaryQueries) {
-    const results = await searchWeb(q, 10);
-    const allSnippets = results.map(r => `${r.title} ${r.snippet}`).join(' ');
+
+  const serpSalarySets = await Promise.all(serpSalaryQueries.map(q => searchWeb(q, 8)));
+  for (const [idx, results] of serpSalarySets.entries()) {
+    const q = serpSalaryQueries[idx];
+    const filteredResults = results.filter(r => {
+      if (!r.link) return false;
+      if (idx === 0) return scoreCompanyMatch(companyName, aliases, companyContext, `${r.title} ${r.snippet}`, r.link) >= 3;
+      return /salary\.com|glassdoor\.com|levels\.fyi|ziprecruiter\.com|indeed\.com|builtin\.com|comparably\.com/i.test(r.link);
+    });
+    if (!filteredResults.length) continue;
+    const allSnippets = filteredResults.map(r => `${r.title} ${r.snippet}`).join(' ');
     const salaries = extractSalaries(allSnippets);
     if (salaries.length > 0) {
       const sorted = salaries.sort((a, b) => a - b);
@@ -1136,24 +1151,25 @@ export async function scrapeLevels(
       if (data.targetRoleSalaries.length === 0 && q.includes(companyName)) {
         data.targetRoleSalaries.push({ company: companyName, role, base: median, totalComp: Math.round(median * 1.3), location });
       } else if (data.comparableSalaries.length < 8) {
-        const source = results[0]?.link.match(/(?:salary\.com|glassdoor\.com|levels\.fyi|ziprecruiter\.com|indeed\.com|builtin\.com)/)?.[0] || 'Market data';
+        const source = filteredResults[0]?.link.match(/(?:salary\.com|glassdoor\.com|levels\.fyi|ziprecruiter\.com|indeed\.com|builtin\.com|comparably\.com)/)?.[0] || 'Market data';
         data.comparableSalaries.push({ company: source, base: median, totalComp: Math.round(median * 1.3) });
       }
-      for (const r of results.slice(0, 3)) {
+      for (const r of filteredResults.slice(0, 3)) {
         sources.push({ url: r.link, type: 'levels', title: r.title.slice(0, 80), timestamp: new Date().toISOString() });
       }
     }
   }
 
   // Google News RSS — company-specific salary articles
-  const companyQuery = `"${companyName}" "${role}" salary compensation`;
-  const rss1 = await fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(companyQuery)}&hl=en-US&gl=US&ceid=US:en`);
+  const companySalaryQuery = `"${companyName}" "${role}" ${companyContext || ''} salary compensation`;
+  const rss1 = await fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(companySalaryQuery)}&hl=en-US&gl=US&ceid=US:en`);
   if (rss1 && rss1.length > 500) {
     const $c = cheerio.load(rss1, { xmlMode: true });
     const allText: string[] = [];
     $c('item').each((_, el) => {
       const title = $c(el).find('title').text();
       const desc = $c(el).find('description').text().replace(/<[^>]*>/g, '');
+      if (scoreCompanyMatch(companyName, aliases, companyContext, `${title} ${desc}`, '') < 3) return;
       allText.push(`${title} ${desc}`);
     });
     const salaries = extractSalaries(allText.join(' '));
@@ -1161,83 +1177,22 @@ export async function scrapeLevels(
       const avg = Math.round(salaries.reduce((a, b) => a + b, 0) / salaries.length);
       data.targetRoleSalaries.push({ company: companyName, role, base: avg, totalComp: Math.round(avg * 1.3), location });
     }
-    sources.push({ url: `https://news.google.com/rss/search?q=${encodeURIComponent(companyQuery)}`, type: 'levels', title: `${companyName} ${role} Salary`, timestamp: new Date().toISOString() });
+    sources.push({ url: `https://news.google.com/rss/search?q=${encodeURIComponent(companySalaryQuery)}`, type: 'levels', title: `${companyName} ${role} Salary`, timestamp: new Date().toISOString() });
   }
 
   // Market comps — role + location salary news
-  const newsQuery = `"${role}" salary compensation ${location} 2024 2025`;
-  const rss2 = await fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(newsQuery)}&hl=en-US&gl=US&ceid=US:en`);
-  if (rss2 && rss2.length > 500) {
-    const $n = cheerio.load(rss2, { xmlMode: true });
-    $n('item').each((_, el) => {
-      const title = $n(el).find('title').text();
-      const desc = $n(el).find('description').text().replace(/<[^>]*>/g, '');
-      const link = $n(el).find('link').text().trim() || $n(el).find('guid').text().trim();
-      const salaries = extractSalaries(`${title} ${desc}`);
-      if (salaries.length > 0 && data.comparableSalaries.length < 8) {
-        const avg = Math.round(salaries.reduce((a, b) => a + b, 0) / salaries.length);
-        const source = $n(el).find('source').text().trim() || 'News';
-        data.comparableSalaries.push({ company: source, base: avg, totalComp: Math.round(avg * 1.3) });
-        if (link) sources.push({ url: link, type: 'levels', title: title.slice(0, 80), timestamp: new Date().toISOString() });
-      }
-    });
+  const marketResults = await searchWeb(`"${role}" average salary ${location} 2025 2026 site:salary.com OR site:glassdoor.com OR site:ziprecruiter.com OR site:indeed.com OR site:comparably.com`, 8);
+  for (const r of marketResults) {
+    if (data.comparableSalaries.length >= 6) break;
+    const salaries = extractSalaries(`${r.title} ${r.snippet}`);
+    if (!salaries.length) continue;
+    const avg = Math.round(salaries.reduce((a, b) => a + b, 0) / salaries.length);
+    const source = r.link.match(/(?:salary\.com|glassdoor\.com|levels\.fyi|ziprecruiter\.com|indeed\.com|builtin\.com|comparably\.com)/)?.[0] || 'Market data';
+    data.comparableSalaries.push({ company: source, base: avg, totalComp: Math.round(avg * 1.3) });
+    sources.push({ url: r.link, type: 'levels', title: r.title.slice(0, 80), timestamp: new Date().toISOString() });
   }
 
-  // Broader market comps — generic role salary data
-  const marketQuery = `"${role}" average salary 2024 2025 annual compensation`;
-  const rss3 = await fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(marketQuery)}&hl=en-US&gl=US&ceid=US:en`);
-  if (rss3 && rss3.length > 500) {
-    const $m = cheerio.load(rss3, { xmlMode: true });
-    $m('item').each((_, el) => {
-      const title = $m(el).find('title').text();
-      const desc = $m(el).find('description').text().replace(/<[^>]*>/g, '');
-      const link = $m(el).find('link').text().trim() || $m(el).find('guid').text().trim();
-      const salaries = extractSalaries(`${title} ${desc}`);
-      if (salaries.length > 0 && data.comparableSalaries.length < 8) {
-        const avg = Math.round(salaries.reduce((a, b) => a + b, 0) / salaries.length);
-        const source = $m(el).find('source').text().trim() || 'Market data';
-        data.comparableSalaries.push({ company: source, base: avg, totalComp: Math.round(avg * 1.3) });
-        if (link) sources.push({ url: link, type: 'levels', title: title.slice(0, 80), timestamp: new Date().toISOString() });
-      }
-    });
-  }
-
-  // Direct salary site fetches — ZipRecruiter and Indeed have static-ish salary pages
-  const roleSlug = role.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-
-  // ZipRecruiter
-  const zipUrl = `https://www.ziprecruiter.com/Salaries/${roleSlug}-Salary`;
-  const zipHtml = await fetchHtml(zipUrl);
-  if (zipHtml && zipHtml.length > 2000) {
-    const $z = cheerio.load(zipHtml);
-    const bodyText = $z('body').text().replace(/\s+/g, ' ');
-    const avgM = bodyText.match(/average[^$]{0,30}\$\s*([\d,]+)/i) || bodyText.match(/\$\s*([\d]{2,3},\d{3})\s*(?:per year|annually|average)/i);
-    if (avgM) {
-      const avg = parseInt(avgM[1].replace(/,/g, ''));
-      if (avg >= 25000 && avg <= 600000) {
-        data.targetRoleSalaries.push({ company: 'ZipRecruiter', role, base: avg, totalComp: Math.round(avg * 1.2), location });
-        sources.push({ url: zipUrl, type: 'levels', title: `${role} Salary - ZipRecruiter`, timestamp: new Date().toISOString() });
-      }
-    }
-  }
-
-  // Indeed Salaries
-  const indeedUrl = `https://www.indeed.com/career/${roleSlug}/salaries`;
-  const indeedHtml = await fetchHtml(indeedUrl, { 'Accept-Language': 'en-US,en;q=0.9' });
-  if (indeedHtml && indeedHtml.length > 2000 && !indeedHtml.includes('sign in') && !indeedHtml.includes('Sign in')) {
-    const $i = cheerio.load(indeedHtml);
-    const bodyText = $i('body').text().replace(/\s+/g, ' ');
-    const avgM = bodyText.match(/average(?:\s+base)?\s+salary[^$]{0,30}\$\s*([\d,]+)/i) || bodyText.match(/\$\s*([\d]{2,3},\d{3})\s*(?:per year|\/yr|annually)/i);
-    if (avgM) {
-      const avg = parseInt(avgM[1].replace(/,/g, ''));
-      if (avg >= 25000 && avg <= 600000) {
-        data.comparableSalaries.push({ company: 'Indeed', base: avg, totalComp: Math.round(avg * 1.2) });
-        sources.push({ url: indeedUrl, type: 'levels', title: `${role} Salaries - Indeed`, timestamp: new Date().toISOString() });
-      }
-    }
-  }
-
-  return { data, sources };
+  return { data, sources: dedupeSources(sources).slice(0, 18) };
 }
 
 // ── BLS ──────────────────────────────────────────────────────────────────────
@@ -2151,7 +2106,8 @@ function extractJsonLd(html: string): Partial<JobPostingData> {
 }
 
 export async function scrapeJobPosting(
-  url: string
+  url: string,
+  options?: { timeoutMs?: number },
 ): Promise<{ data: JobPostingData; sources: ScrapedSource[]; loginWall?: boolean }> {
   const sources: ScrapedSource[] = [];
 
@@ -2174,7 +2130,7 @@ export async function scrapeJobPosting(
     'Sec-Fetch-Mode': 'navigate',
     'Sec-Fetch-Site': 'none',
     'Upgrade-Insecure-Requests': '1',
-  });
+  }, options?.timeoutMs ?? 15000);
 
   if (!html) return { data, sources };
 
@@ -2334,10 +2290,10 @@ export async function findJobPostingUrl(
   const ranked = [...new Map(candidates
     .sort((a, b) => b.score - a.score)
     .map(candidate => [candidate.link, candidate])).values()]
-    .slice(0, 3);
+    .slice(0, 2);
 
   for (const candidate of ranked) {
-    const result = await scrapeJobPosting(candidate.link);
+    const result = await scrapeJobPosting(candidate.link, { timeoutMs: 6000 });
     const combined = `${result.data.company} ${result.data.title} ${result.data.location} ${result.data.fullText.slice(0, 1500)}`;
     const score = scoreCompanyMatch(companyName, aliases, scoredContext, combined, candidate.link);
     const roleLooksRight =
@@ -2485,9 +2441,10 @@ async function fetchEdgarFacts(companyName: string): Promise<CompanyFactsData | 
 // COURTLISTENER_TOKEN env var (free at courtlistener.com). Skips gracefully
 // if token is absent.
 
-async function fetchCourtListener(companyName: string): Promise<CourtCase[]> {
+async function fetchCourtListener(companyName: string, companyContext?: string): Promise<CourtCase[]> {
   const token = process.env.COURTLISTENER_KEY;
   if (!token) return [];
+  const aliases = getCompanyAliases(companyName, companyContext);
 
   type CLResult = {
     caseName?: string;
@@ -2498,8 +2455,8 @@ async function fetchCourtListener(companyName: string): Promise<CourtCase[]> {
   };
 
   const queries = [
-    `"${companyName}" employment discrimination retaliation`,
-    `"${companyName}" wage overtime FLSA class action`,
+    `"${companyName}" ${companyContext || ''} employment discrimination retaliation`,
+    `"${companyName}" ${companyContext || ''} wage overtime FLSA class action`,
   ];
 
   const batches = await Promise.all(
@@ -2526,7 +2483,8 @@ async function fetchCourtListener(companyName: string): Promise<CourtCase[]> {
     for (const r of batch) {
       const title = r.caseName ?? '';
       if (!title || seen.has(title)) continue;
-      if (!mentionsCompany(companyName, title, r.snippet)) continue;
+      if (!mentionsAnyCompanyAlias(aliases, title, r.snippet)) continue;
+      if (scoreCompanyMatch(companyName, aliases, companyContext, `${title} ${r.snippet ?? ''}`, r.absolute_url ?? '') < 4) continue;
 
       seen.add(title);
 
@@ -2555,7 +2513,7 @@ async function fetchCourtListener(companyName: string): Promise<CourtCase[]> {
 // Looks up a company's GitHub org to assess engineering culture signals.
 // Uses GITHUB_KEY env var for higher rate limit (5k/hr vs 60/hr). Optional.
 
-async function fetchGitHub(companyName: string): Promise<GitHubData | null> {
+async function fetchGitHub(companyName: string, companyContext?: string): Promise<GitHubData | null> {
   try {
     const headers: Record<string, string> = {
       'User-Agent': 'FairLadder.ai',
@@ -2582,6 +2540,9 @@ async function fetchGitHub(companyName: string): Promise<GitHubData | null> {
       orgs[0];
 
     if (!bestOrg) return null;
+    if (scoreCompanyMatch(companyName, getCompanyAliases(companyName, companyContext), companyContext, bestOrg.login, `https://github.com/${bestOrg.login}`) < 3) {
+      return null;
+    }
 
     // Fetch org info + recent repos in parallel
     const [orgRes, reposRes] = await Promise.all([
@@ -2625,10 +2586,11 @@ const JUNK_DOMAINS = [
   'academia.edu', 'docslib.org', 'issuu.com',
 ];
 
-async function fetchNLRB(companyName: string): Promise<string[]> {
+async function fetchNLRB(companyName: string, companyContext?: string): Promise<string[]> {
+  const aliases = getCompanyAliases(companyName, companyContext);
   const [nlrbSite, nlrbGeneral] = await Promise.all([
-    searchWeb(`site:nlrb.gov "${companyName}"`, 5),
-    searchWeb(`"${companyName}" NLRB "unfair labor practice" OR "union election" OR "labor board"`, 4),
+    searchWeb(`site:nlrb.gov "${companyName}" ${companyContext || ''}`, 5),
+    searchWeb(`site:nlrb.gov "${companyName}" ${companyContext || ''} NLRB "unfair labor practice" OR "union election" OR "labor board"`, 4),
   ]);
 
   const signals: string[] = [];
@@ -2650,8 +2612,10 @@ async function fetchNLRB(companyName: string): Promise<string[]> {
       snippetLower.includes('unfair labor practice') ||
       (snippetLower.includes('labor board') && snippetLower.includes('union'));
 
-    const mentionsCompanyName = mentionsCompany(companyName, r.title, r.snippet);
+    const mentionsCompanyName = mentionsAnyCompanyAlias(aliases, r.title, r.snippet);
     if (isEntityNameClash(companyName, r.title, r.snippet)) continue;
+    if (!fromNLRB) continue;
+    if (scoreCompanyMatch(companyName, aliases, companyContext, `${r.title} ${r.snippet ?? ''}`, r.link) < 4) continue;
 
     if (hasNLRBSignal && mentionsCompanyName) {
       signals.push(`${r.title}${r.snippet ? ` — ${r.snippet.slice(0, 120)}` : ''} [URL:${r.link}]`);
@@ -2665,10 +2629,11 @@ async function fetchNLRB(companyName: string): Promise<string[]> {
 // Searches OSHA inspection and violation records via Serper.
 // No additional API key needed.
 
-async function fetchOSHA(companyName: string): Promise<string[]> {
+async function fetchOSHA(companyName: string, companyContext?: string): Promise<string[]> {
+  const aliases = getCompanyAliases(companyName, companyContext);
   const [oshaSite, oshaGeneral] = await Promise.all([
-    searchWeb(`site:osha.gov "${companyName}"`, 4),
-    searchWeb(`"${companyName}" OSHA violation citation inspection penalty`, 4),
+    searchWeb(`site:osha.gov "${companyName}" ${companyContext || ''}`, 4),
+    searchWeb(`site:osha.gov "${companyName}" ${companyContext || ''} OSHA violation citation inspection penalty`, 4),
   ]);
 
   const signals: string[] = [];
@@ -2689,8 +2654,10 @@ async function fetchOSHA(companyName: string): Promise<string[]> {
       snippetLower.includes('citation') ||
       (snippetLower.includes('violation') && snippetLower.includes('inspection'));
 
-    const mentionsCompanyName = mentionsCompany(companyName, r.title, r.snippet);
+    const mentionsCompanyName = mentionsAnyCompanyAlias(aliases, r.title, r.snippet);
     if (isEntityNameClash(companyName, r.title, r.snippet)) continue;
+    if (!fromOSHA) continue;
+    if (scoreCompanyMatch(companyName, aliases, companyContext, `${r.title} ${r.snippet ?? ''}`, r.link) < 4) continue;
     const recordSpecific =
       /inspection|citation|penalt|fine|fatal|injury|illness|establishment/i.test(r.title) ||
       /inspection|citation|penalt|fine|fatal|injury|illness|establishment/i.test(r.snippet ?? '');
@@ -2764,16 +2731,17 @@ async function fetchLCA(companyName: string): Promise<LCAData | null> {
 
 export async function scrapeEnrichment(
   companyName: string,
+  companyContext?: string,
 ): Promise<{ data: EnrichmentData; sources: ScrapedSource[] }> {
   const sources: ScrapedSource[] = [];
 
   // All six run in parallel
   const [companyFacts, courtCases, github, nlrbSignals, oshaSignals, lca] = await Promise.all([
     fetchEdgarFacts(companyName),
-    fetchCourtListener(companyName),
-    fetchGitHub(companyName),
-    fetchNLRB(companyName),
-    fetchOSHA(companyName),
+    fetchCourtListener(companyName, companyContext),
+    fetchGitHub(companyName, companyContext),
+    fetchNLRB(companyName, companyContext),
+    fetchOSHA(companyName, companyContext),
     fetchLCA(companyName),
   ]);
 
