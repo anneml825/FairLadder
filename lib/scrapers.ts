@@ -190,6 +190,29 @@ function getUrlHostname(rawUrl: string): string {
   }
 }
 
+function normalizeNewsTitle(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isLowQualityNewsHost(host: string): boolean {
+  return /openpr\.com|coingape\.com|bitcoinworld\.co\.in|blockonomi\.com|simplywall\.st/i.test(host);
+}
+
+function getNewsSourcePriority(source: Pick<GoogleNewsResult, 'url' | 'source'>): number {
+  const host = getUrlHostname(source.url || source.source || '');
+  if (!host) return 0;
+  if (/kraken\.com|prnewswire\.com|businesswire\.com|globenewswire\.com|accessnewswire\.com/i.test(host)) return 6;
+  if (/reuters\.com|apnews\.com|wsj\.com|ft\.com|bloomberg\.com|coindesk\.com|cnbc\.com|yahoo\.com|dlnews\.com|msn\.com/i.test(host)) return 5;
+  if (/sec\.gov|courtlistener\.com|bls\.gov/i.test(host)) return 4;
+  if (/news\.google\.com/i.test(host)) return 1;
+  if (isLowQualityNewsHost(host)) return 0;
+  return 3;
+}
+
 function getContextKeywords(text?: string): string[] {
   const lower = (text ?? '').toLowerCase();
   const buckets: Array<[string, RegExp]> = [
@@ -256,7 +279,10 @@ function inferOfficialDomainFromResults(companyName: string, aliases: string[], 
 }
 
 function shouldKeepNewsResult(companyName: string, aliases: string[], companyContext: string | undefined, title: string, description: string, link: string, source = ''): boolean {
-  return scoreCompanyMatch(companyName, aliases, companyContext, `${title} ${description} ${source}`, link) >= 4;
+  const score = scoreCompanyMatch(companyName, aliases, companyContext, `${title} ${description} ${source}`, link);
+  const host = getUrlHostname(link);
+  if (isLowQualityNewsHost(host) && score < 6) return false;
+  return score >= 4;
 }
 
 async function fetchOfficialSiteSignals(
@@ -393,6 +419,7 @@ export async function scrapeGoogleNews(
   const results: GoogleNewsResult[] = [];
   const sources: ScrapedSource[] = [];
   const seenUrls = new Set<string>();
+  const titleIndex = new Map<string, number>();
   const aliases = getCompanyAliases(companyName, companyContext);
 
   // Build disambiguated company query — for generic names like "Meridian", appending context
@@ -415,6 +442,39 @@ export async function scrapeGoogleNews(
   if (role && role.length > 3 && role.length < 60 && !/connecting|talent|opportunity|markets/i.test(role)) {
     queries.push(`${companyQ} "${role}" salary OR compensation OR hiring`);
   }
+
+  const upsertNewsResult = (item: GoogleNewsResult, sourceType: ScrapedSource['type'] = 'google-news') => {
+    const normalizedTitle = normalizeNewsTitle(item.title);
+    const existingIndex = titleIndex.get(normalizedTitle);
+    if (existingIndex !== undefined) {
+      const existing = results[existingIndex];
+      const existingPriority = getNewsSourcePriority(existing);
+      const nextPriority = getNewsSourcePriority(item);
+      const existingIsWrapper = /news\.google\.com/i.test(getUrlHostname(existing.url));
+      const nextIsWrapper = /news\.google\.com/i.test(getUrlHostname(item.url));
+
+      if (nextPriority < existingPriority) return;
+      if (nextPriority === existingPriority && !(existingIsWrapper && !nextIsWrapper)) return;
+
+      results[existingIndex] = item;
+      sources[existingIndex] = {
+        url: item.url,
+        type: sourceType,
+        title: item.title.slice(0, 100),
+        timestamp: item.publishedAt || new Date().toISOString(),
+      };
+      return;
+    }
+
+    titleIndex.set(normalizedTitle, results.length);
+    results.push(item);
+    sources.push({
+      url: item.url,
+      type: sourceType,
+      title: item.title.slice(0, 100),
+      timestamp: item.publishedAt || new Date().toISOString(),
+    });
+  };
 
   // Run RSS feeds + Serper news in parallel — date-bias recent coverage and supplement with official sources
   const [xmlResults, serperNews1, serperNews2, serperPR, officialSearchResults, presswireResults] = await Promise.all([
@@ -443,8 +503,7 @@ export async function scrapeGoogleNews(
       if (!title || !link || seenUrls.has(link)) return;
       if (!shouldKeepNewsResult(companyName, aliases, companyContext, title, description, link, src)) return;
       seenUrls.add(link);
-      results.push({ title, url: link, summary: description, publishedAt: pubDate, source: src || 'Google News' });
-      sources.push({ url: link, type: 'google-news', title, timestamp: pubDate || new Date().toISOString() });
+      upsertNewsResult({ title, url: link, summary: description, publishedAt: pubDate, source: src || 'Google News' });
     });
   }
 
@@ -455,8 +514,7 @@ export async function scrapeGoogleNews(
     seenUrls.add(r.link);
     // Normalise Serper relative dates ("3 hours ago") to ISO string
     const ts = r.date ? new Date(parseNewsDate(r.date)).toISOString() : new Date().toISOString();
-    results.push({ title: r.title, url: r.link, summary: r.snippet, publishedAt: ts, source: 'Google News' });
-    sources.push({ url: r.link, type: 'google-news', title: r.title.slice(0, 100), timestamp: ts });
+    upsertNewsResult({ title: r.title, url: r.link, summary: r.snippet, publishedAt: ts, source: getUrlHostname(r.link) || 'Google News' });
   }
 
   const officialDomain = inferOfficialDomainFromResults(companyName, aliases, officialSearchResults);
@@ -465,19 +523,13 @@ export async function scrapeGoogleNews(
     for (const signal of officialSignals) {
       if (seenUrls.has(signal.url)) continue;
       seenUrls.add(signal.url);
-      results.push({
+      upsertNewsResult({
         title: signal.title,
         url: signal.url,
         summary: signal.summary,
         publishedAt: signal.publishedAt,
         source: signal.source,
-      });
-      sources.push({
-        url: signal.url,
-        type: signal.type ?? 'google-news',
-        title: signal.title.slice(0, 100),
-        timestamp: signal.publishedAt || new Date().toISOString(),
-      });
+      }, signal.type ?? 'google-news');
     }
   }
 
@@ -485,20 +537,26 @@ export async function scrapeGoogleNews(
     if (!r.link || !r.title || seenUrls.has(r.link)) continue;
     if (!shouldKeepNewsResult(companyName, aliases, companyContext, r.title, r.snippet, r.link)) continue;
     seenUrls.add(r.link);
-    results.push({
+    upsertNewsResult({
       title: r.title,
       url: r.link,
       summary: r.snippet || 'Recent press-release coverage',
       publishedAt: '',
       source: getUrlHostname(r.link) || 'Press release',
     });
-    sources.push({ url: r.link, type: 'google-news', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
   }
 
-  // Sort newest-first before slicing — ensures recent updates beat stale but famous stories
-  results.sort((a, b) => parseNewsDate(b.publishedAt) - parseNewsDate(a.publishedAt));
+  const paired = results.map((result, index) => ({ result, source: sources[index] }));
+  paired.sort((a, b) => {
+    const priorityDiff = getNewsSourcePriority(b.result) - getNewsSourcePriority(a.result);
+    if (priorityDiff !== 0) return priorityDiff;
+    return parseNewsDate(b.result.publishedAt) - parseNewsDate(a.result.publishedAt);
+  });
 
-  return { results: results.slice(0, 50), sources: sources.slice(0, 50) };
+  return {
+    results: paired.map(item => item.result).slice(0, 50),
+    sources: dedupeSources(paired.map(item => item.source)).slice(0, 50),
+  };
 }
 
 // ── REDDIT ───────────────────────────────────────────────────────────────────
@@ -575,11 +633,15 @@ export async function scrapeReddit(
   const threads: RedditThread[] = [];
   const sources: ScrapedSource[] = [];
   const seen = new Set<string>();
+  const aliases = getCompanyAliases(companyName, companyContext);
 
   const addPost = (p: { title: string; url: string; subreddit: string; score: number; num_comments: number; selftext: string }) => {
     if (seen.has(p.url)) return;
+    if (isEntityNameClash(companyName, p.title, p.selftext)) return;
+    const companyScore = scoreCompanyMatch(companyName, aliases, companyContext, `${p.title} ${p.selftext}`, p.url);
+    if (companyScore < 4) return;
     seen.add(p.url);
-    threads.push({ title: p.title, url: p.url, subreddit: p.subreddit, score: p.score, commentCount: p.num_comments, topComments: [], body: p.selftext.slice(0, 400) });
+    threads.push({ title: p.title, url: p.url, subreddit: p.subreddit, score: p.score + companyScore, commentCount: p.num_comments, topComments: [], body: p.selftext.slice(0, 400) });
     sources.push({ url: p.url, type: 'reddit', title: p.title.slice(0, 120), timestamp: new Date().toISOString() });
   };
 
@@ -607,6 +669,8 @@ export async function scrapeReddit(
   const candidateUrls: Array<{ link: string; title: string; snippet: string }> = [];
   for (const results of serpResultSets) {
     for (const r of results) {
+      const companyScore = scoreCompanyMatch(companyName, aliases, companyContext, `${r.title} ${r.snippet}`, r.link);
+      if (companyScore < 4) continue;
       if (r.link.includes('reddit.com/r/') && !seen.has(r.link)) {
         seen.add(r.link);
         candidateUrls.push(r);
@@ -636,7 +700,9 @@ export async function scrapeReddit(
         .slice(0, 3)
         .map(c => (c.data.body ?? '').slice(0, 200));
     } catch { /* use snippet as body */ }
-    threads.push({ title: r.title, url: r.link, subreddit: subredditM?.[1] || 'reddit', score: 0, commentCount: 0, topComments, body });
+    const companyScore = scoreCompanyMatch(companyName, aliases, companyContext, `${r.title} ${body} ${topComments.join(' ')}`, r.link);
+    if (companyScore < 4) return;
+    threads.push({ title: r.title, url: r.link, subreddit: subredditM?.[1] || 'reddit', score: companyScore, commentCount: topComments.length, topComments, body });
     sources.push({ url: r.link, type: 'reddit', title: r.title.slice(0, 120), timestamp: new Date().toISOString() });
   }));
 
@@ -667,7 +733,13 @@ export async function scrapeReddit(
   const rssResults = await Promise.all(rssUrls.map(u => fetchHtml(u)));
   rssResults.forEach(xml => { if (xml) extractRedditThreads(xml, seen, threads, sources); });
 
-  return { threads: threads.slice(0, 30), sources };
+  threads.sort((a, b) => {
+    const scoreDiff = (b.score + b.commentCount) - (a.score + a.commentCount);
+    if (scoreDiff !== 0) return scoreDiff;
+    return b.topComments.length - a.topComments.length;
+  });
+
+  return { threads: threads.slice(0, 20), sources: dedupeSources(sources).slice(0, 20) };
 }
 
 // ── GOOGLE CUSTOM SEARCH ─────────────────────────────────────────────────────
@@ -859,19 +931,17 @@ export async function scrapeGlassdoor(
 
       // Save ALL review-site results as sources (Glassdoor, Comparably, Indeed, Blind, Levels, etc.)
       const isReviewSite = lower.includes('glassdoor.com') || lower.includes('comparably.com') ||
-        lower.includes('indeed.com') || lower.includes('teamblind.com') ||
-        lower.includes('levels.fyi') || lower.includes('reddit.com') ||
-        lower.includes('linkedin.com') || lower.includes('salary.com') ||
-        lower.includes('payscale.com') || lower.includes('builtin.com') ||
-        lower.includes('ziprecruiter.com') || lower.includes('builtinnyc.com') ||
-        lower.includes('builtinla.com') || lower.includes('builtinchicago.com');
+        lower.includes('indeed.com') || lower.includes('teamblind.com');
       if (isReviewSite) {
         sources.push({ url: r.link, type: 'glassdoor', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
       }
   }
 
   if (hasCoreGlassdoorSnapshot(data)) {
-    return { data, sources: sources.slice(0, 12) };
+    return {
+      data: { ...data, pros: [...new Set(data.pros)].slice(0, 6), cons: [...new Set(data.cons)].slice(0, 6) },
+      sources: dedupeSources(sources).slice(0, 12),
+    };
   }
 
   // Strategy 1b: Fetch the Glassdoor Reviews page and extract Apollo GraphQL state.
@@ -929,7 +999,10 @@ export async function scrapeGlassdoor(
   }
 
   if (hasCoreGlassdoorSnapshot(data)) {
-    return { data, sources: sources.slice(0, 12) };
+    return {
+      data: { ...data, pros: [...new Set(data.pros)].slice(0, 6), cons: [...new Set(data.cons)].slice(0, 6) },
+      sources: dedupeSources(sources).slice(0, 12),
+    };
   }
 
   // Comparably — server-side rendered, less aggressive bot detection
@@ -969,7 +1042,10 @@ export async function scrapeGlassdoor(
   }
 
   if (hasCoreGlassdoorSnapshot(data)) {
-    return { data, sources: sources.slice(0, 12) };
+    return {
+      data: { ...data, pros: [...new Set(data.pros)].slice(0, 6), cons: [...new Set(data.cons)].slice(0, 6) },
+      sources: dedupeSources(sources).slice(0, 12),
+    };
   }
 
   // Comparably CEO page
@@ -1080,7 +1156,10 @@ export async function scrapeGlassdoor(
   }
 
   if (hasCoreGlassdoorSnapshot(data)) {
-    return { data, sources: sources.slice(0, 12) };
+    return {
+      data: { ...data, pros: [...new Set(data.pros)].slice(0, 6), cons: [...new Set(data.cons)].slice(0, 6) },
+      sources: dedupeSources(sources).slice(0, 12),
+    };
   }
 
   // Blind — anonymous employee posts, often more candid than Glassdoor
@@ -1100,7 +1179,10 @@ export async function scrapeGlassdoor(
   }
   sources.push(...blindSources);
 
-  return { data, sources };
+  return {
+    data: { ...data, pros: [...new Set(data.pros)].slice(0, 6), cons: [...new Set(data.cons)].slice(0, 6) },
+    sources: dedupeSources(sources).filter(source => !source.url.includes('reddit.com')).slice(0, 12),
+  };
 }
 
 // ── LEVELS.FYI / SALARY INTELLIGENCE ────────────────────────────────────────
@@ -1339,6 +1421,8 @@ export async function scrapeBLS(
     locationData: '',
   };
 
+  const hasAuthoritativeBlsSource = () => sources.some(source => /bls\.gov/i.test(source.url));
+
   // ── Direct BLS OES lookup for roles with known misclassification risk ────────
   const directMatch = BLS_DIRECT_MAP.find(m => m.test.test(role));
   if (directMatch) {
@@ -1418,12 +1502,14 @@ export async function scrapeBLS(
   const allSalaryText = allSalaryResults.map(r => `${r.title} ${r.snippet}`).join(' ');
   for (const r of allSalaryResults) {
     const snippet = `${r.title} ${r.snippet}`;
+    const roleScore = scoreCompanyMatch(role, getCompanyAliases(role), undefined, snippet, r.link);
+    if (roleScore < 3 && !directMatch) continue;
     if (/\$[\d,]+|\d{2,3},\d{3}|per.?year|annual.?salary|average.?salary|median.?salary|median.?wage/i.test(snippet)) {
       sources.push({ url: r.link, type: 'bls', title: r.title.slice(0, 80), timestamp: new Date().toISOString() });
     }
   }
   const allNums = extractSalaries(allSalaryText);
-  if (allNums.length > 0) {
+  if (allNums.length > 0 && (!directMatch || hasAuthoritativeBlsSource())) {
     const sorted = allNums.sort((a, b) => a - b);
     data.medianSalary = sorted[Math.floor(sorted.length / 2)];
   }
@@ -1659,7 +1745,14 @@ export async function scrapeBLS(
 
   normalizeSalaryBands(data);
 
-  return { data, sources };
+  if (directMatch && !hasAuthoritativeBlsSource()) {
+    data.p10 = null;
+    data.p25 = null;
+    data.p75 = null;
+    data.p90 = null;
+  }
+
+  return { data, sources: dedupeSources(sources).slice(0, 12) };
 }
 
 
@@ -2293,13 +2386,17 @@ export async function findJobPostingUrl(
     .slice(0, 2);
 
   for (const candidate of ranked) {
-    const result = await scrapeJobPosting(candidate.link, { timeoutMs: 6000 });
-    const combined = `${result.data.company} ${result.data.title} ${result.data.location} ${result.data.fullText.slice(0, 1500)}`;
-    const score = scoreCompanyMatch(companyName, aliases, scoredContext, combined, candidate.link);
-    const roleLooksRight =
-      mentionsCompany(role, result.data.title, combined) ||
-      getCompanyTokens(role).some(token => token.length > 2 && combined.toLowerCase().includes(token));
-    if (score >= 4 && roleLooksRight) return candidate.link;
+    try {
+      const result = await scrapeJobPosting(candidate.link, { timeoutMs: 6000 });
+      const combined = `${result.data.company} ${result.data.title} ${result.data.location} ${result.data.fullText.slice(0, 1500)}`;
+      const score = scoreCompanyMatch(companyName, aliases, scoredContext, combined, candidate.link);
+      const roleLooksRight =
+        mentionsCompany(role, result.data.title, combined) ||
+        getCompanyTokens(role).some(token => token.length > 2 && combined.toLowerCase().includes(token));
+      if (score >= 4 && roleLooksRight) return candidate.link;
+    } catch {
+      continue;
+    }
   }
 
   return ranked[0]?.link ?? null;
