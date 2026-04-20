@@ -407,7 +407,7 @@ export default function ResultsPage() {
                   onClick={() => setActiveTab('sources')}
                   className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
                 >
-                  Inspect evidence ->
+                  Inspect evidence {'->'}
                 </button>
               </div>
 
@@ -487,7 +487,7 @@ export default function ResultsPage() {
                   onClick={() => setActiveTab('salary')}
                   className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
                 >
-                  Open compensation analysis ->
+                  Open compensation analysis {'->'}
                 </button>
               </div>
             </div>
