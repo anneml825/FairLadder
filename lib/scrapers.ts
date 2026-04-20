@@ -182,6 +182,149 @@ function mentionsAnyCompanyAlias(aliases: string[], ...parts: Array<string | und
   return aliases.some(alias => mentionsCompany(alias, ...parts));
 }
 
+function getUrlHostname(rawUrl: string): string {
+  try {
+    return new URL(rawUrl).hostname.replace(/^www\./, '').toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+function getContextKeywords(text?: string): string[] {
+  const lower = (text ?? '').toLowerCase();
+  const buckets: Array<[string, RegExp]> = [
+    ['crypto', /\bcrypto\b|cryptocurrency|digital asset|bitcoin|ethereum|blockchain|web3|exchange/i],
+    ['fintech', /fintech|payments|brokerage|trading platform|capital markets|banking/i],
+    ['ai', /\bai\b|artificial intelligence|machine learning|llm|gpt|generative/i],
+    ['design', /\bux\b|\bui\b|user experience|product design|design systems|research/i],
+    ['energy', /energy|utilities|utility|octopus energy|smart meter|tariff/i],
+    ['healthcare', /healthcare|medical|patient|clinical|biotech/i],
+    ['saas', /saas|enterprise software|b2b software|cloud platform/i],
+    ['consumer', /consumer|retail|marketplace|ecommerce|e-commerce/i],
+    ['public-company', /investor relations|earnings|shareholder|nasdaq|nyse|sec filing/i],
+  ];
+
+  return buckets.filter(([, re]) => re.test(lower)).map(([label]) => label);
+}
+
+function scoreCompanyMatch(
+  companyName: string,
+  aliases: string[],
+  companyContext: string | undefined,
+  text: string,
+  link = '',
+): number {
+  const haystack = `${text} ${link}`.toLowerCase();
+  let score = 0;
+
+  if (mentionsCompany(companyName, haystack)) score += 4;
+  if (mentionsAnyCompanyAlias(aliases, haystack)) score += 3;
+
+  const contextTerms = getContextKeywords(companyContext);
+  for (const term of contextTerms) {
+    if (haystack.includes(term.replace('-', ' ')) || haystack.includes(term)) score += 2;
+  }
+
+  if (contextTerms.includes('crypto') && /octopus energy|kraken\.tech|utility|utilities|tariff|smart meter|energy platform/i.test(haystack)) {
+    score -= 6;
+  }
+  if (contextTerms.includes('energy') && /\bcrypto\b|cryptocurrency|bitcoin|blockchain|web3|exchange/i.test(haystack)) {
+    score -= 6;
+  }
+  if (contextTerms.includes('design') && /sales trader|account executive|business development|sales/i.test(haystack)) {
+    score -= 3;
+  }
+
+  return score;
+}
+
+function inferOfficialDomainFromResults(companyName: string, aliases: string[], results: SerpResult[]): string | null {
+  const blockedHosts = [
+    'linkedin.com', 'glassdoor.com', 'indeed.com', 'reddit.com', 'news.google.com',
+    'prnewswire.com', 'businesswire.com', 'globenewswire.com', 'accessnewswire.com',
+    'crunchbase.com', 'wikipedia.org', 'sec.gov',
+  ];
+
+  for (const r of results) {
+    const host = getUrlHostname(r.link);
+    if (!host || blockedHosts.some(blocked => host.includes(blocked)) || JOB_BOARD_RE.test(r.link)) continue;
+    if (mentionsAnyCompanyAlias(aliases, r.title, r.snippet, host)) return host;
+    if (host.split('.').some(part => part.length > 2 && mentionsCompany(companyName, part))) return host;
+  }
+
+  return null;
+}
+
+function shouldKeepNewsResult(companyName: string, aliases: string[], companyContext: string | undefined, title: string, description: string, link: string, source = ''): boolean {
+  return scoreCompanyMatch(companyName, aliases, companyContext, `${title} ${description} ${source}`, link) >= 4;
+}
+
+async function fetchOfficialSiteSignals(
+  companyName: string,
+  aliases: string[],
+  companyContext: string | undefined,
+  companyDomain: string,
+): Promise<Array<GoogleNewsResult & { type?: ScrapedSource['type'] }>> {
+  const paths = [
+    '',
+    '/news',
+    '/newsroom',
+    '/press',
+    '/media',
+    '/blog',
+    '/investors',
+    '/investor-relations',
+    '/investor-relations/news',
+  ];
+  const found: Array<GoogleNewsResult & { type?: ScrapedSource['type'] }> = [];
+  const seen = new Set<string>();
+
+  for (const path of paths.slice(0, 7)) {
+    const url = `https://${companyDomain}${path}`;
+    const html = await fetchHtml(url);
+    if (!html || html.length < 200) continue;
+    const $ = cheerio.load(html);
+    const pageTitle = $('title').text().trim();
+    const metaDescription = $('meta[name="description"]').attr('content')?.trim() ?? '';
+    if (scoreCompanyMatch(companyName, aliases, companyContext, `${pageTitle} ${metaDescription}`, url) < 3) continue;
+
+    if (!seen.has(url)) {
+      seen.add(url);
+      found.push({
+        title: pageTitle || `${companyName} official updates`,
+        url,
+        summary: metaDescription || `Official ${path === '' ? 'company' : path.replace(/\//g, ' ')} page for ${companyName}`,
+        publishedAt: '',
+        source: companyDomain,
+        type: 'google-news',
+      });
+    }
+
+    $('a[href]').each((_, el) => {
+      if (found.length >= 8) return false;
+      const href = $(el).attr('href')?.trim();
+      const anchorText = $(el).text().replace(/\s+/g, ' ').trim();
+      if (!href || !anchorText || anchorText.length < 12) return;
+      const absolute = href.startsWith('http') ? href : `https://${companyDomain}${href.startsWith('/') ? '' : '/'}${href}`;
+      const host = getUrlHostname(absolute);
+      if (!host.includes(companyDomain) || seen.has(absolute)) return;
+      if (!/news|press|media|investor|release|blog|article|post|update/i.test(absolute) && !/news|press|investor|release|update|earnings|ipo|lawsuit|announcement/i.test(anchorText)) return;
+      if (scoreCompanyMatch(companyName, aliases, companyContext, anchorText, absolute) < 2) return;
+      seen.add(absolute);
+      found.push({
+        title: anchorText.slice(0, 140),
+        url: absolute,
+        summary: `Official company site link surfaced from ${companyDomain}`,
+        publishedAt: '',
+        source: companyDomain,
+        type: 'google-news',
+      });
+    });
+  }
+
+  return found;
+}
+
 function hasCoreGlassdoorSnapshot(data: GlassdoorData): boolean {
   return Boolean(
     data.overallRating &&
@@ -246,6 +389,7 @@ export async function scrapeGoogleNews(
   const results: GoogleNewsResult[] = [];
   const sources: ScrapedSource[] = [];
   const seenUrls = new Set<string>();
+  const aliases = getCompanyAliases(companyName, companyContext);
 
   // Build disambiguated company query — for generic names like "Meridian", appending context
   // (e.g. "AI startup") prevents matching Meridian Idaho, Meridian IT, Le Meridian hotel, etc.
@@ -258,7 +402,9 @@ export async function scrapeGoogleNews(
     `${companyQ} earnings OR revenue OR profit OR "quarterly results" OR "financial results"`,
     `${companyQ} CEO OR CFO OR CTO OR "executive departure" OR resignation OR leadership`,
     `${companyQ} lawsuit OR investigation OR fine OR regulatory OR fraud OR NLRB`,
+    `${companyQ} lawsuit dismissed OR dropped OR settled OR resolved OR "case closed"`,
     `${companyQ} employees OR culture OR "work environment" OR glassdoor OR "employee reviews"`,
+    `${companyQ} press release OR newsroom OR investor relations OR blog`,
   ];
 
   // Only add role query when role is a real job title (not a company tagline)
@@ -266,16 +412,18 @@ export async function scrapeGoogleNews(
     queries.push(`${companyQ} "${role}" salary OR compensation OR hiring`);
   }
 
-  // Run RSS feeds + Serper news in parallel — all date-filtered to last year
-  const [xmlResults, serperNews1, serperNews2, serperPR] = await Promise.all([
+  // Run RSS feeds + Serper news in parallel — date-bias recent coverage and supplement with official sources
+  const [xmlResults, serperNews1, serperNews2, serperPR, officialSearchResults, presswireResults] = await Promise.all([
     Promise.all(
       queries.map(q =>
         fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(q + ' after:2025-01-01')}&hl=en-US&gl=US&ceid=US:en`)
       )
     ),
     searchSerperNews(`${companyQ} news layoffs earnings acquisition IPO lawsuit`, 10),
-    searchSerperNews(`${companyName} company news 2025 2026`, 8),
+    searchSerperNews(`${companyQ} company news 2025 2026`, 8),
     searchSerperNews(`site:prnewswire.com OR site:businesswire.com OR site:globenewswire.com "${companyName}"`, 6),
+    searchWeb(`${companyQ} official site newsroom investor relations press`, 8),
+    searchWeb(`${companyQ} site:prnewswire.com OR site:businesswire.com OR site:globenewswire.com OR site:accessnewswire.com`, 8),
   ]);
 
   // Process RSS results
@@ -289,7 +437,7 @@ export async function scrapeGoogleNews(
       const src = $(el).find('source').text().trim();
       const description = $(el).find('description').text().replace(/<[^>]*>/g, '').trim().slice(0, 300);
       if (!title || !link || seenUrls.has(link)) return;
-      if (!mentionsCompany(companyName, title, description, src)) return;
+      if (!shouldKeepNewsResult(companyName, aliases, companyContext, title, description, link, src)) return;
       seenUrls.add(link);
       results.push({ title, url: link, summary: description, publishedAt: pubDate, source: src || 'Google News' });
       sources.push({ url: link, type: 'google-news', title, timestamp: pubDate || new Date().toISOString() });
@@ -299,7 +447,7 @@ export async function scrapeGoogleNews(
   // Process Serper news results — carry the date field so we can sort by recency
   for (const r of [...serperNews1, ...serperNews2, ...serperPR]) {
     if (!r.link || !r.title || seenUrls.has(r.link)) continue;
-    if (!mentionsCompany(companyName, r.title, r.snippet)) continue;
+    if (!shouldKeepNewsResult(companyName, aliases, companyContext, r.title, r.snippet, r.link)) continue;
     seenUrls.add(r.link);
     // Normalise Serper relative dates ("3 hours ago") to ISO string
     const ts = r.date ? new Date(parseNewsDate(r.date)).toISOString() : new Date().toISOString();
@@ -307,7 +455,43 @@ export async function scrapeGoogleNews(
     sources.push({ url: r.link, type: 'google-news', title: r.title.slice(0, 100), timestamp: ts });
   }
 
-  // Sort newest-first before slicing — ensures recent 2026 news beats stale 2023 results
+  const officialDomain = inferOfficialDomainFromResults(companyName, aliases, officialSearchResults);
+  if (officialDomain) {
+    const officialSignals = await fetchOfficialSiteSignals(companyName, aliases, companyContext, officialDomain);
+    for (const signal of officialSignals) {
+      if (seenUrls.has(signal.url)) continue;
+      seenUrls.add(signal.url);
+      results.push({
+        title: signal.title,
+        url: signal.url,
+        summary: signal.summary,
+        publishedAt: signal.publishedAt,
+        source: signal.source,
+      });
+      sources.push({
+        url: signal.url,
+        type: signal.type ?? 'google-news',
+        title: signal.title.slice(0, 100),
+        timestamp: signal.publishedAt || new Date().toISOString(),
+      });
+    }
+  }
+
+  for (const r of presswireResults) {
+    if (!r.link || !r.title || seenUrls.has(r.link)) continue;
+    if (!shouldKeepNewsResult(companyName, aliases, companyContext, r.title, r.snippet, r.link)) continue;
+    seenUrls.add(r.link);
+    results.push({
+      title: r.title,
+      url: r.link,
+      summary: r.snippet || 'Recent press-release coverage',
+      publishedAt: '',
+      source: getUrlHostname(r.link) || 'Press release',
+    });
+    sources.push({ url: r.link, type: 'google-news', title: r.title.slice(0, 100), timestamp: new Date().toISOString() });
+  }
+
+  // Sort newest-first before slicing — ensures recent updates beat stale but famous stories
   results.sort((a, b) => parseNewsDate(b.publishedAt) - parseNewsDate(a.publishedAt));
 
   return { results: results.slice(0, 50), sources: sources.slice(0, 50) };
@@ -2114,21 +2298,55 @@ export async function scrapeJobPosting(
 
 const JOB_BOARD_RE = /greenhouse\.io|lever\.co|ashbyhq\.com|myworkdayjobs\.com|workday\.com|smartrecruiters\.com|icims\.com|bamboohr\.com|breezy\.hr|jobvite\.com|recruitee\.com|workable\.com|taleo\.net|jobs\.lever\.co|boards\.greenhouse\.io/i;
 
-export async function findJobPostingUrl(companyName: string, role: string): Promise<string | null> {
+export async function findJobPostingUrl(
+  companyName: string,
+  role: string,
+  companyContext?: string,
+  jobText?: string,
+): Promise<string | null> {
   if (!role || role.length > 80) return null;
 
+  const aliases = getCompanyAliases(companyName, companyContext);
+  const contextTerms = uniqueNonEmpty([
+    companyContext,
+    ...getContextKeywords(jobText).slice(0, 3),
+  ]).join(' ');
+  const contextSuffix = contextTerms ? ` ${contextTerms}` : '';
+  const scoredContext = contextTerms || companyContext;
+
   const queries = [
-    `"${companyName}" "${role}" site:greenhouse.io OR site:boards.greenhouse.io OR site:lever.co OR site:jobs.lever.co OR site:ashbyhq.com`,
-    `"${companyName}" "${role}" site:myworkdayjobs.com OR site:smartrecruiters.com OR site:icims.com OR site:bamboohr.com`,
-    `"${companyName}" "${role}" job apply now 2024 2025`,
+    `"${companyName}" "${role}"${contextSuffix} site:greenhouse.io OR site:boards.greenhouse.io OR site:lever.co OR site:jobs.lever.co OR site:ashbyhq.com`,
+    `"${companyName}" "${role}"${contextSuffix} site:myworkdayjobs.com OR site:smartrecruiters.com OR site:icims.com OR site:bamboohr.com`,
+    `"${companyName}" "${role}"${contextSuffix} job apply now 2025 2026`,
+    `${companyName} ${role} ${contextTerms} careers`,
   ];
 
+  const candidates: Array<{ link: string; score: number }> = [];
   for (const q of queries) {
-    const results = await searchWeb(q, 5);
-    const jobResult = results.find(r => JOB_BOARD_RE.test(r.link));
-    if (jobResult) return jobResult.link;
+    const results = await searchWeb(q, 6);
+    for (const r of results) {
+      if (!JOB_BOARD_RE.test(r.link)) continue;
+      const score = scoreCompanyMatch(companyName, aliases, scoredContext, `${r.title} ${r.snippet}`, r.link);
+      if (score >= 2) candidates.push({ link: r.link, score });
+    }
   }
-  return null;
+
+  const ranked = [...new Map(candidates
+    .sort((a, b) => b.score - a.score)
+    .map(candidate => [candidate.link, candidate])).values()]
+    .slice(0, 3);
+
+  for (const candidate of ranked) {
+    const result = await scrapeJobPosting(candidate.link);
+    const combined = `${result.data.company} ${result.data.title} ${result.data.location} ${result.data.fullText.slice(0, 1500)}`;
+    const score = scoreCompanyMatch(companyName, aliases, scoredContext, combined, candidate.link);
+    const roleLooksRight =
+      mentionsCompany(role, result.data.title, combined) ||
+      getCompanyTokens(role).some(token => token.length > 2 && combined.toLowerCase().includes(token));
+    if (score >= 4 && roleLooksRight) return candidate.link;
+  }
+
+  return ranked[0]?.link ?? null;
 }
 
 // ─── EDGAR COMPANY FACTS ──────────────────────────────────────────────────────

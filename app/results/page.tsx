@@ -168,6 +168,48 @@ function summarizeCourtCases(cases: NonNullable<NonNullable<AnalysisResult['rawD
   return `${lead} ${follow}`;
 }
 
+function stripMd(text: string): string {
+  return text.replace(/\*\*(.+?)\*\*/g, '$1').trim();
+}
+
+function getTopBullets(raw: IntelligenceBullet[] | string | undefined, limit = 2): string[] {
+  return normalizeBullets(raw)
+    .map(b => stripMd(b.text))
+    .filter(Boolean)
+    .slice(0, limit);
+}
+
+function getRecommendedAction(verdict: string): string {
+  if (verdict === 'STRONG OPPORTUNITY') return 'Pursue this role, but go in prepared on compensation, team fit, and scope specifics.';
+  if (verdict === 'SIGNIFICANT CONCERNS') return 'Treat this as a high-risk opportunity unless the company can resolve the major concerns clearly and directly.';
+  return 'Keep this in play, but verify the weak spots before spending more interview time or negotiating from assumptions.';
+}
+
+function getRecruiterQuestions(result: AnalysisResult): string[] {
+  const questions: string[] = [];
+  const remotePolicy = result.roleScorecard?.find(row => row.dimension === 'Remote Policy Reliability');
+  const titleAccuracy = result.roleScorecard?.find(row => row.dimension === 'Title Accuracy');
+  const seniorityMatch = result.roleScorecard?.find(row => row.dimension === 'Seniority-Responsibility Match');
+
+  if (remotePolicy && remotePolicy.status !== 'green') {
+    questions.push('Can you confirm the exact remote, hybrid, or in-office expectation in writing?');
+  }
+  if (titleAccuracy && titleAccuracy.status !== 'green') {
+    questions.push('How does this role map internally by level, expectations, and promotion path?');
+  }
+  if (seniorityMatch && seniorityMatch.status !== 'green') {
+    questions.push('Which responsibilities are truly core to the role, and which ones are handled by partner teams?');
+  }
+  if (result.salaryIntelligence?.verdict === 'LOW') {
+    questions.push('What compensation band has actually been approved for someone at my level and location?');
+  }
+  if (result.dataGaps?.length) {
+    questions.push('What would someone only learn about this team after joining that I should know now?');
+  }
+
+  return [...new Set(questions)].slice(0, 3);
+}
+
 const VERDICT_CONFIG = {
   'STRONG OPPORTUNITY': {
     bg: 'from-emerald-500/20 via-emerald-500/5 to-transparent',
@@ -224,13 +266,19 @@ export default function ResultsPage() {
 
   const vc = VERDICT_CONFIG[result.verdict] || VERDICT_CONFIG['PROCEED WITH CAUTION'];
   const criticalFlags = result.redFlags?.filter(f => f.severity === 'critical') || [];
+  const cautionFlags = result.redFlags?.filter(f => f.severity !== 'critical') || [];
+  const topCompanyBullets = getTopBullets(result.companyIntelligence, 2);
+  const topRoleBullets = getTopBullets(result.roleIntelligence, 2);
+  const topSalaryBullets = getTopBullets(result.salaryAnalysis, 2);
+  const recruiterQuestions = getRecruiterQuestions(result);
+  const recommendation = getRecommendedAction(result.verdict);
 
   const tabs = [
-    { id: 'overview', label: 'Overview' },
+    { id: 'overview', label: 'Decision' },
+    { id: 'salary', label: 'Comp' },
+    { id: 'flags', label: `Risk ${result.redFlags?.length ? `(${result.redFlags.length})` : ''}` },
     { id: 'company', label: 'Company Intel' },
     { id: 'role', label: 'Role Analysis' },
-    { id: 'salary', label: 'Salary' },
-    { id: 'flags', label: `Flags ${result.redFlags?.length ? `(${result.redFlags.length})` : ''}` },
     { id: 'negotiate', label: 'Negotiate', hidden: !result.negotiationPlaybook },
     { id: 'sources', label: `Sources (${result.sourcesCount})` },
   ].filter(t => !t.hidden);
@@ -348,7 +396,102 @@ export default function ResultsPage() {
 
         {/* OVERVIEW TAB */}
         {activeTab === 'overview' && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+            <div className="xl:col-span-2 glass rounded-2xl p-6 border border-[#1e2736]">
+              <div className="flex items-center justify-between gap-3 mb-4">
+                <div>
+                  <h3 className="text-sm font-semibold text-white uppercase tracking-wide">Decision Brief</h3>
+                  <p className="text-xs text-[#8892a4] mt-1">The fastest read on whether this opportunity is worth pursuing</p>
+                </div>
+                <button
+                  onClick={() => setActiveTab('sources')}
+                  className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+                >
+                  Inspect evidence ->
+                </button>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-[#0d1117]/60 border border-[#1e2736] mb-4">
+                <div className="text-[10px] text-[#8892a4] uppercase tracking-widest mb-2">Recommended Action</div>
+                <p className="text-base text-white leading-relaxed">{recommendation}</p>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="p-4 rounded-2xl bg-emerald-500/5 border border-emerald-500/15">
+                  <div className="text-[10px] text-emerald-400 uppercase tracking-widest mb-2">Best Signals</div>
+                  <div className="space-y-2">
+                    {(result.greenFlags?.slice(0, 2).map(flag => flag.explanation) || topCompanyBullets.slice(0, 2)).filter(Boolean).slice(0, 2).map((text, i) => (
+                      <p key={i} className="text-sm text-[#c8d0e0] leading-relaxed">{text}</p>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-red-500/5 border border-red-500/15">
+                  <div className="text-[10px] text-red-400 uppercase tracking-widest mb-2">Watch Closely</div>
+                  <div className="space-y-2">
+                    {(criticalFlags.length ? criticalFlags : cautionFlags).slice(0, 2).map((flag, i) => (
+                      <p key={i} className="text-sm text-[#c8d0e0] leading-relaxed">{flag.explanation}</p>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-indigo-500/5 border border-indigo-500/15">
+                  <div className="text-[10px] text-indigo-400 uppercase tracking-widest mb-2">Ask Next</div>
+                  <div className="space-y-2">
+                    {recruiterQuestions.map((question, i) => (
+                      <p key={i} className="text-sm text-[#c8d0e0] leading-relaxed">{question}</p>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="glass rounded-2xl p-6 border border-[#1e2736]">
+              <h3 className="text-sm font-semibold text-white uppercase tracking-wide mb-4">Comp Snapshot</h3>
+              <div className="space-y-3">
+                <div className="p-3 rounded-xl bg-[#0d1117]/60 border border-[#1e2736]">
+                  <div className="text-[10px] text-[#8892a4] uppercase tracking-widest mb-1">Positioning</div>
+                  <div className="flex items-end justify-between gap-3">
+                    <div className="text-lg font-bold text-white">{result.salaryIntelligence?.verdict || 'UNKNOWN'}</div>
+                    {typeof result.salaryIntelligence?.percentile === 'number' && (
+                      <div className="text-sm text-indigo-300 font-mono">{result.salaryIntelligence.percentile}th pct</div>
+                    )}
+                  </div>
+                </div>
+
+                {typeof result.salaryIntelligence?.targetSalary === 'number' && (
+                  <div className="p-3 rounded-xl bg-[#0d1117]/60 border border-[#1e2736]">
+                    <div className="text-[10px] text-[#8892a4] uppercase tracking-widest mb-1">Target Salary</div>
+                    <div className="text-lg font-bold text-white font-mono">
+                      ${result.salaryIntelligence.targetSalary.toLocaleString()}
+                    </div>
+                  </div>
+                )}
+
+                {typeof result.salaryIntelligence?.median === 'number' && (
+                  <div className="p-3 rounded-xl bg-[#0d1117]/60 border border-[#1e2736]">
+                    <div className="text-[10px] text-[#8892a4] uppercase tracking-widest mb-1">Market Median</div>
+                    <div className="text-lg font-bold text-white font-mono">
+                      ${result.salaryIntelligence.median.toLocaleString()}
+                    </div>
+                  </div>
+                )}
+
+                <div className="pt-1 space-y-2">
+                  {topSalaryBullets.map((text, i) => (
+                    <p key={i} className="text-sm text-[#c8d0e0] leading-relaxed">{text}</p>
+                  ))}
+                </div>
+
+                <button
+                  onClick={() => setActiveTab('salary')}
+                  className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+                >
+                  Open compensation analysis ->
+                </button>
+              </div>
+            </div>
+
             <RadarChart scores={result.radarScores} />
 
             {/* Language warning chips — red/yellow only, with link to full Role tab */}
@@ -381,7 +524,7 @@ export default function ResultsPage() {
               </div>
             )}
 
-            <div className="lg:col-span-2">
+            <div className="xl:col-span-3">
               <Timeline events={result.timeline || []} />
             </div>
           </div>

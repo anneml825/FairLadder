@@ -5,7 +5,7 @@ export const runtime = 'nodejs';
 export const maxDuration = 15;
 
 export async function POST(req: NextRequest) {
-  const { url, companyName, role } = await req.json();
+  const { url, companyName, role, companyContext, jobText } = await req.json();
 
   // Direct URL scrape
   if (url) {
@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
 
   // No URL — try to find the posting in the wild via Serper
   if (companyName && role) {
-    const foundUrl = await findJobPostingUrl(companyName, role);
+    const foundUrl = await findJobPostingUrl(companyName, role, companyContext, jobText);
     if (foundUrl) {
       const result = await scrapeJobPosting(foundUrl);
       // Return found URL so frontend can surface it

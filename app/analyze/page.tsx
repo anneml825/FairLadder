@@ -85,6 +85,22 @@ export default function AnalyzePage() {
 
   const addSources = (n: number) => setTotalSources(t => t + n);
 
+  const inferCompanyContext = (text: string) => {
+    const lower = text.toLowerCase();
+    const ctxSignals: string[] = [];
+    if (/\bcrypto\b|cryptocurrency|digital asset|bitcoin|blockchain|web3|defi|exchange/i.test(lower)) ctxSignals.push('crypto');
+    if (/\bai\b|artificial intelligence|machine learning|llm|gpt|generative/i.test(lower)) ctxSignals.push('AI');
+    if (/startup|series [a-e]|seed round|venture.backed|vc.backed|early.stage/i.test(lower)) ctxSignals.push('startup');
+    if (/private equity|private markets|deal management|portfolio company/i.test(lower)) ctxSignals.push('private equity');
+    if (/fintech|financial technology|payments|trading platform|brokerage/i.test(lower)) ctxSignals.push('fintech');
+    if (/healthcare|health.?tech|medical/i.test(lower)) ctxSignals.push('healthcare');
+    if (/saas|software.as.a.service|cloud.based|enterprise software/i.test(lower)) ctxSignals.push('SaaS');
+    if (/ecommerce|e.commerce|marketplace/i.test(lower)) ctxSignals.push('ecommerce');
+    if (/cybersecurity|security platform|infosec/i.test(lower)) ctxSignals.push('cybersecurity');
+    if (/investor relations|earnings|shareholders|public company|nasdaq|nyse/i.test(lower)) ctxSignals.push('public company');
+    return ctxSignals.slice(0, 4).join(' ');
+  };
+
   // Generic JSON fetcher with timeout
   async function fetchStep<T>(
     id: StepId,
@@ -124,6 +140,8 @@ export default function AnalyzePage() {
     const run = async () => {
       // ── 1. Job posting (only if URL provided) ────────────────────────────
       let jobPosting: JobPostingData | undefined;
+      const pastedJobText = request.jobText || '';
+      const initialCompanyContext = inferCompanyContext(pastedJobText);
       if (request.jobUrl) {
         setStep('job', { status: 'running' });
         const res = await fetchStep<{ data: JobPostingData; sources: ScrapedSource[]; loginWall?: boolean }>(
@@ -175,7 +193,15 @@ export default function AnalyzePage() {
         // Try to find the actual job posting URL to get postedDate
         setStep('job', { status: 'running' });
         const jobSearchRes = await fetchStep<{ data: JobPostingData; sources: ScrapedSource[]; foundUrl?: string }>(
-          'job', '/api/scrape/job', { companyName: request.companyName, role: extractedTitle }, signal,
+          'job',
+          '/api/scrape/job',
+          {
+            companyName: request.companyName,
+            role: extractedTitle,
+            companyContext: initialCompanyContext,
+            jobText: pastedJobText,
+          },
+          signal,
         );
 
         jobPosting = {
@@ -202,17 +228,8 @@ export default function AnalyzePage() {
 
       // Extract disambiguating context from the job posting so scrapers don't
       // confuse "Meridian AI startup" with "Meridian Idaho" or "Meridian IT".
-      const jobFullText = (jobPosting?.fullText || request.jobText || '').toLowerCase();
-      const ctxSignals: string[] = [];
-      if (/\bai\b|artificial intelligence|machine learning|llm|gpt|generative/i.test(jobFullText)) ctxSignals.push('AI');
-      if (/startup|series [a-e]|seed round|venture.backed|vc.backed|early.stage/i.test(jobFullText)) ctxSignals.push('startup');
-      if (/private equity|private markets|deal management|portfolio company/i.test(jobFullText)) ctxSignals.push('private equity');
-      if (/fintech|financial technology/i.test(jobFullText)) ctxSignals.push('fintech');
-      if (/healthcare|health.?tech|medical/i.test(jobFullText)) ctxSignals.push('healthcare');
-      if (/saas|software.as.a.service|cloud.based|enterprise software/i.test(jobFullText)) ctxSignals.push('SaaS');
-      if (/ecommerce|e.commerce|marketplace/i.test(jobFullText)) ctxSignals.push('ecommerce');
-      if (/cybersecurity|security platform|infosec/i.test(jobFullText)) ctxSignals.push('cybersecurity');
-      const companyContext = ctxSignals.slice(0, 3).join(' ');
+      const jobFullText = jobPosting?.fullText || request.jobText || '';
+      const companyContext = inferCompanyContext(jobFullText) || initialCompanyContext;
 
       // ── 2. Fire all scraping calls in PARALLEL ────────────────────────────
       const [newsRes, redditRes, glassdoorRes, levelsRes, blsRes, secRes, enrichRes] = await Promise.all([
@@ -230,11 +247,11 @@ export default function AnalyzePage() {
         ),
 
         fetchStep<{ data: LevelsData; sources: ScrapedSource[] }>(
-          'levels', '/api/scrape/levels', { companyName: request.companyName, role, location: request.location }, signal,
+          'levels', '/api/scrape/levels', { companyName: request.companyName, role, location: request.location, companyContext }, signal,
         ),
 
         fetchStep<{ data: BLSData; sources: ScrapedSource[] }>(
-          'bls', '/api/scrape/bls', { role: role || 'professional worker', location: request.location, companyName: request.companyName }, signal,
+          'bls', '/api/scrape/bls', { role: role || 'professional worker', location: request.location, companyName: request.companyName, companyContext }, signal,
         ),
 
         fetchStep<{ data: SECData; sources: ScrapedSource[] }>(
