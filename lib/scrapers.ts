@@ -224,6 +224,7 @@ function getContextKeywords(text?: string): string[] {
     ['robotics', /robotics|robot\b|autonomous|auv|rov|drone|marine technology|underwater|sonar|seabed/i],
     ['defense', /defense|navy|military|weapon systems|surveillance/i],
     ['media', /newsroom|journalism|editorial|publishing|media company|press/i],
+    ['sports', /hockey|nhl|sportsbook|sports team|arena|athletic|baseball|basketball|football/i],
     ['healthcare', /healthcare|medical|patient|clinical|biotech/i],
     ['saas', /saas|enterprise software|b2b software|cloud platform/i],
     ['consumer', /consumer|retail|marketplace|ecommerce|e-commerce/i],
@@ -236,15 +237,19 @@ function getContextKeywords(text?: string): string[] {
 function buildMatchingContext(...texts: Array<string | undefined>): string | undefined {
   const raw = texts.filter(Boolean).join(' ');
   const keywords = getContextKeywords(raw);
-  const joined = uniqueNonEmpty([...texts, ...keywords]).join(' ').trim();
+  const compactInputs = texts
+    .map(text => (text ?? '').replace(/\s+/g, ' ').trim())
+    .filter(text => text && text.length <= 120);
+  const joined = uniqueNonEmpty([...compactInputs, ...keywords]).join(' ').trim();
   return joined || undefined;
 }
 
 const CONFLICTING_CONTEXTS: Record<string, string[]> = {
-  crypto: ['energy', 'robotics', 'defense', 'healthcare'],
+  crypto: ['energy', 'robotics', 'defense', 'healthcare', 'sports'],
   energy: ['crypto', 'robotics', 'media'],
-  robotics: ['crypto', 'media', 'consumer'],
-  media: ['robotics', 'energy', 'healthcare'],
+  robotics: ['crypto', 'media', 'consumer', 'sports'],
+  media: ['robotics', 'energy', 'healthcare', 'sports'],
+  sports: ['crypto', 'media', 'healthcare', 'fintech'],
   healthcare: ['crypto', 'robotics', 'energy'],
   saas: ['energy'],
 };
@@ -301,7 +306,11 @@ function inferOfficialDomainFromResults(companyName: string, aliases: string[], 
 function shouldKeepNewsResult(companyName: string, aliases: string[], companyContext: string | undefined, title: string, description: string, link: string, source = ''): boolean {
   const score = scoreCompanyMatch(companyName, aliases, companyContext, `${title} ${description} ${source}`, link);
   const host = getUrlHostname(link);
+  const publisher = source.toLowerCase();
+  const titleLower = title.toLowerCase();
   if (isLowQualityNewsHost(host) && score < 6) return false;
+  if (/bitget|cryptorank|cryptomaniaks|yellow\.com|global banking|financefeeds|forklog|invezz|business post nigeria|investing\.com/i.test(`${publisher} ${titleLower}`)) return false;
+  if (/\b(vs|review|comparison|guide)\b/i.test(title) && !/reuters|ap|wsj|ft|bloomberg|coindesk|cnbc|yahoo/i.test(publisher)) return false;
   return score >= 4;
 }
 
@@ -312,7 +321,6 @@ async function fetchOfficialSiteSignals(
   companyDomain: string,
 ): Promise<Array<GoogleNewsResult & { type?: ScrapedSource['type'] }>> {
   const paths = [
-    '',
     '/news',
     '/newsroom',
     '/press',
@@ -354,7 +362,7 @@ async function fetchOfficialSiteSignals(
       const absolute = href.startsWith('http') ? href : `https://${companyDomain}${href.startsWith('/') ? '' : '/'}${href}`;
       const host = getUrlHostname(absolute);
       if (!host.includes(companyDomain) || seen.has(absolute)) return;
-      if (!/news|press|media|investor|release|blog|article|post|update/i.test(absolute) && !/news|press|investor|release|update|earnings|ipo|lawsuit|announcement/i.test(anchorText)) return;
+      if (!/news|press|media|investor|release|blog|article|post|earnings|ipo|announcement/i.test(absolute) && !/news|press|investor|release|earnings|ipo|announcement/i.test(anchorText)) return;
       if (scoreCompanyMatch(companyName, aliases, companyContext, anchorText, absolute) < 2) return;
       seen.add(absolute);
       found.push({
@@ -697,6 +705,9 @@ export async function scrapeReddit(
     for (const r of results) {
       const companyScore = scoreCompanyMatch(companyName, aliases, matchingContext, `${r.title} ${r.snippet}`, r.link);
       if (companyScore < 4) continue;
+      if (!/reddit\.com\/r\/[^/]+\/comments\//i.test(r.link)) continue;
+      const subreddit = r.link.match(/reddit\.com\/r\/([^/]+)/i)?.[1] ?? '';
+      if (/jobhuntify|forhire|hiring|remotework|jobs/i.test(subreddit)) continue;
       if (r.link.includes('reddit.com/r/') && !seen.has(r.link)) {
         seen.add(r.link);
         candidateUrls.push(r);
@@ -728,6 +739,7 @@ export async function scrapeReddit(
     } catch { /* use snippet as body */ }
     const companyScore = scoreCompanyMatch(companyName, aliases, matchingContext, `${r.title} ${body} ${topComments.join(' ')}`, r.link);
     if (companyScore < 4) return;
+    if (/jobhuntify|forhire|hiring|remotework|jobs/i.test(subredditM?.[1] || '')) return;
     threads.push({ title: r.title, url: r.link, subreddit: subredditM?.[1] || 'reddit', score: companyScore, commentCount: topComments.length, topComments, body });
     sources.push({ url: r.link, type: 'reddit', title: r.title.slice(0, 120), timestamp: new Date().toISOString() });
   }));
@@ -1221,7 +1233,11 @@ export async function scrapeGlassdoor(
       pros: [...new Set(data.pros.filter(cleanSnippet))].slice(0, 6),
       cons: [...new Set(data.cons.filter(cleanSnippet))].slice(0, 6),
     },
-    sources: dedupeSources(sources).filter(source => !source.url.includes('reddit.com')).slice(0, 12),
+    sources: dedupeSources(sources)
+      .filter(source => !source.url.includes('reddit.com'))
+      .filter(source => !isEntityNameClash(companyName, source.title, source.url))
+      .filter(source => scoreCompanyMatch(companyName, aliases, matchingContext, source.title, source.url) >= 4)
+      .slice(0, 12),
   };
 }
 
@@ -1790,10 +1806,12 @@ export async function scrapeBLS(
   normalizeSalaryBands(data);
 
   if (directMatch && !hasAuthoritativeBlsSource()) {
+    data.medianSalary = null;
     data.p10 = null;
     data.p25 = null;
     data.p75 = null;
     data.p90 = null;
+    data.locationData = '';
   }
 
   return { data, sources: dedupeSources(sources).slice(0, 12) };
@@ -2207,7 +2225,14 @@ export async function scrapeSEC(
     }
   }
 
-  return { data, sources };
+  const hasSignals =
+    data.filings.length > 0 ||
+    data.layoffSignals.length > 0 ||
+    data.executiveDepartures.length > 0 ||
+    data.fundingSignals.length > 0 ||
+    data.financialSignals.length > 0;
+
+  return { data, sources: hasSignals ? dedupeSources(sources) : [] };
 }
 
 // ── JOB POSTING ──────────────────────────────────────────────────────────────
