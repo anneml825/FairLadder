@@ -221,6 +221,9 @@ function getContextKeywords(text?: string): string[] {
     ['ai', /\bai\b|artificial intelligence|machine learning|llm|gpt|generative/i],
     ['design', /\bux\b|\bui\b|user experience|product design|design systems|research/i],
     ['energy', /energy|utilities|utility|octopus energy|smart meter|tariff/i],
+    ['robotics', /robotics|robot\b|autonomous|auv|rov|drone|marine technology|underwater|sonar|seabed/i],
+    ['defense', /defense|navy|military|weapon systems|surveillance/i],
+    ['media', /newsroom|journalism|editorial|publishing|media company|press/i],
     ['healthcare', /healthcare|medical|patient|clinical|biotech/i],
     ['saas', /saas|enterprise software|b2b software|cloud platform/i],
     ['consumer', /consumer|retail|marketplace|ecommerce|e-commerce/i],
@@ -229,6 +232,22 @@ function getContextKeywords(text?: string): string[] {
 
   return buckets.filter(([, re]) => re.test(lower)).map(([label]) => label);
 }
+
+function buildMatchingContext(...texts: Array<string | undefined>): string | undefined {
+  const raw = texts.filter(Boolean).join(' ');
+  const keywords = getContextKeywords(raw);
+  const joined = uniqueNonEmpty([...texts, ...keywords]).join(' ').trim();
+  return joined || undefined;
+}
+
+const CONFLICTING_CONTEXTS: Record<string, string[]> = {
+  crypto: ['energy', 'robotics', 'defense', 'healthcare'],
+  energy: ['crypto', 'robotics', 'media'],
+  robotics: ['crypto', 'media', 'consumer'],
+  media: ['robotics', 'energy', 'healthcare'],
+  healthcare: ['crypto', 'robotics', 'energy'],
+  saas: ['energy'],
+};
 
 function scoreCompanyMatch(
   companyName: string,
@@ -244,15 +263,16 @@ function scoreCompanyMatch(
   if (mentionsAnyCompanyAlias(aliases, haystack)) score += 3;
 
   const contextTerms = getContextKeywords(companyContext);
+  const haystackTerms = getContextKeywords(haystack);
   for (const term of contextTerms) {
-    if (haystack.includes(term.replace('-', ' ')) || haystack.includes(term)) score += 2;
+    if (haystack.includes(term.replace('-', ' ')) || haystack.includes(term) || haystackTerms.includes(term)) score += 2;
   }
 
-  if (contextTerms.includes('crypto') && /octopus energy|kraken\.tech|utility|utilities|tariff|smart meter|energy platform/i.test(haystack)) {
-    score -= 6;
-  }
-  if (contextTerms.includes('energy') && /\bcrypto\b|cryptocurrency|bitcoin|blockchain|web3|exchange/i.test(haystack)) {
-    score -= 6;
+  for (const term of contextTerms) {
+    const conflicts = CONFLICTING_CONTEXTS[term] ?? [];
+    for (const conflict of conflicts) {
+      if (haystackTerms.includes(conflict)) score -= 6;
+    }
   }
   if (contextTerms.includes('design') && /sales trader|account executive|business development|sales/i.test(haystack)) {
     score -= 3;
@@ -414,13 +434,15 @@ async function fetchHtml(url: string, extraHeaders: Record<string, string> = {},
 export async function scrapeGoogleNews(
   companyName: string,
   role?: string,
-  companyContext?: string
+  companyContext?: string,
+  identityText?: string,
 ): Promise<{ results: GoogleNewsResult[]; sources: ScrapedSource[] }> {
   const results: GoogleNewsResult[] = [];
   const sources: ScrapedSource[] = [];
   const seenUrls = new Set<string>();
   const titleIndex = new Map<string, number>();
-  const aliases = getCompanyAliases(companyName, companyContext);
+  const matchingContext = buildMatchingContext(companyContext, role, identityText);
+  const aliases = getCompanyAliases(companyName, matchingContext);
 
   // Build disambiguated company query — for generic names like "Meridian", appending context
   // (e.g. "AI startup") prevents matching Meridian Idaho, Meridian IT, Le Meridian hotel, etc.
@@ -501,7 +523,7 @@ export async function scrapeGoogleNews(
       const src = $(el).find('source').text().trim();
       const description = $(el).find('description').text().replace(/<[^>]*>/g, '').trim().slice(0, 300);
       if (!title || !link || seenUrls.has(link)) return;
-      if (!shouldKeepNewsResult(companyName, aliases, companyContext, title, description, link, src)) return;
+      if (!shouldKeepNewsResult(companyName, aliases, matchingContext, title, description, link, src)) return;
       seenUrls.add(link);
       upsertNewsResult({ title, url: link, summary: description, publishedAt: pubDate, source: src || 'Google News' });
     });
@@ -510,7 +532,7 @@ export async function scrapeGoogleNews(
   // Process Serper news results — carry the date field so we can sort by recency
   for (const r of [...serperNews1, ...serperNews2, ...serperPR]) {
     if (!r.link || !r.title || seenUrls.has(r.link)) continue;
-    if (!shouldKeepNewsResult(companyName, aliases, companyContext, r.title, r.snippet, r.link)) continue;
+    if (!shouldKeepNewsResult(companyName, aliases, matchingContext, r.title, r.snippet, r.link)) continue;
     seenUrls.add(r.link);
     // Normalise Serper relative dates ("3 hours ago") to ISO string
     const ts = r.date ? new Date(parseNewsDate(r.date)).toISOString() : new Date().toISOString();
@@ -519,7 +541,7 @@ export async function scrapeGoogleNews(
 
   const officialDomain = inferOfficialDomainFromResults(companyName, aliases, officialSearchResults);
   if (officialDomain) {
-    const officialSignals = await fetchOfficialSiteSignals(companyName, aliases, companyContext, officialDomain);
+    const officialSignals = await fetchOfficialSiteSignals(companyName, aliases, matchingContext, officialDomain);
     for (const signal of officialSignals) {
       if (seenUrls.has(signal.url)) continue;
       seenUrls.add(signal.url);
@@ -535,7 +557,7 @@ export async function scrapeGoogleNews(
 
   for (const r of presswireResults) {
     if (!r.link || !r.title || seenUrls.has(r.link)) continue;
-    if (!shouldKeepNewsResult(companyName, aliases, companyContext, r.title, r.snippet, r.link)) continue;
+    if (!shouldKeepNewsResult(companyName, aliases, matchingContext, r.title, r.snippet, r.link)) continue;
     seenUrls.add(r.link);
     upsertNewsResult({
       title: r.title,
@@ -629,16 +651,20 @@ export async function scrapeReddit(
   companyName: string,
   role: string,
   companyContext?: string,
+  identityText?: string,
 ): Promise<{ threads: RedditThread[]; sources: ScrapedSource[] }> {
   const threads: RedditThread[] = [];
   const sources: ScrapedSource[] = [];
   const seen = new Set<string>();
-  const aliases = getCompanyAliases(companyName, companyContext);
+  const matchingContext = buildMatchingContext(companyContext, role, identityText);
+  const aliases = getCompanyAliases(companyName, matchingContext);
 
   const addPost = (p: { title: string; url: string; subreddit: string; score: number; num_comments: number; selftext: string }) => {
     if (seen.has(p.url)) return;
+    if (/jobhuntify|forhire|hiring|remotework|jobs/i.test(p.subreddit)) return;
+    if (/remote job|hiring now|platform accounting analyst/i.test(`${p.title} ${p.selftext}`)) return;
     if (isEntityNameClash(companyName, p.title, p.selftext)) return;
-    const companyScore = scoreCompanyMatch(companyName, aliases, companyContext, `${p.title} ${p.selftext}`, p.url);
+    const companyScore = scoreCompanyMatch(companyName, aliases, matchingContext, `${p.title} ${p.selftext}`, p.url);
     if (companyScore < 4) return;
     seen.add(p.url);
     threads.push({ title: p.title, url: p.url, subreddit: p.subreddit, score: p.score + companyScore, commentCount: p.num_comments, topComments: [], body: p.selftext.slice(0, 400) });
@@ -669,7 +695,7 @@ export async function scrapeReddit(
   const candidateUrls: Array<{ link: string; title: string; snippet: string }> = [];
   for (const results of serpResultSets) {
     for (const r of results) {
-      const companyScore = scoreCompanyMatch(companyName, aliases, companyContext, `${r.title} ${r.snippet}`, r.link);
+      const companyScore = scoreCompanyMatch(companyName, aliases, matchingContext, `${r.title} ${r.snippet}`, r.link);
       if (companyScore < 4) continue;
       if (r.link.includes('reddit.com/r/') && !seen.has(r.link)) {
         seen.add(r.link);
@@ -700,7 +726,7 @@ export async function scrapeReddit(
         .slice(0, 3)
         .map(c => (c.data.body ?? '').slice(0, 200));
     } catch { /* use snippet as body */ }
-    const companyScore = scoreCompanyMatch(companyName, aliases, companyContext, `${r.title} ${body} ${topComments.join(' ')}`, r.link);
+    const companyScore = scoreCompanyMatch(companyName, aliases, matchingContext, `${r.title} ${body} ${topComments.join(' ')}`, r.link);
     if (companyScore < 4) return;
     threads.push({ title: r.title, url: r.link, subreddit: subredditM?.[1] || 'reddit', score: companyScore, commentCount: topComments.length, topComments, body });
     sources.push({ url: r.link, type: 'reddit', title: r.title.slice(0, 120), timestamp: new Date().toISOString() });
@@ -865,6 +891,7 @@ export async function scrapeGlassdoor(
   companyName: string,
   role: string,
   companyContext?: string,
+  identityText?: string,
 ): Promise<{ data: GlassdoorData; sources: ScrapedSource[] }> {
   const sources: ScrapedSource[] = [];
   const data: GlassdoorData = {
@@ -873,9 +900,10 @@ export async function scrapeGlassdoor(
     interviewDifficulty: null, interviewExperience: null, reviewCount: null,
   };
 
-  const ctx = companyContext ? ` ${companyContext}` : '';
+  const matchingContext = buildMatchingContext(companyContext, role, identityText);
+  const ctx = matchingContext ? ` ${matchingContext}` : '';
   const companyQ = `"${companyName}"${ctx}`;
-  const aliases = getCompanyAliases(companyName, companyContext);
+  const aliases = getCompanyAliases(companyName, matchingContext);
 
   const glassdoorSearches = [
     `${companyQ} glassdoor reviews rating culture employees`,
@@ -1179,8 +1207,20 @@ export async function scrapeGlassdoor(
   }
   sources.push(...blindSources);
 
+  const combinedReviewText = [...data.pros, ...data.cons].join(' ');
+  if (!data.reviewCount) {
+    const reviewCountMatch = combinedReviewText.match(/([\d,]+)\s+(?:company\s+)?reviews?/i);
+    if (reviewCountMatch) data.reviewCount = parseInt(reviewCountMatch[1].replace(/,/g, ''));
+  }
+
+  const cleanSnippet = (value: string) => !/reddit|r\/|buttcoin/i.test(value);
+
   return {
-    data: { ...data, pros: [...new Set(data.pros)].slice(0, 6), cons: [...new Set(data.cons)].slice(0, 6) },
+    data: {
+      ...data,
+      pros: [...new Set(data.pros.filter(cleanSnippet))].slice(0, 6),
+      cons: [...new Set(data.cons.filter(cleanSnippet))].slice(0, 6),
+    },
     sources: dedupeSources(sources).filter(source => !source.url.includes('reddit.com')).slice(0, 12),
   };
 }
@@ -1202,10 +1242,12 @@ export async function scrapeLevels(
   role: string,
   location: string,
   companyContext?: string,
+  identityText?: string,
 ): Promise<{ data: LevelsData; sources: ScrapedSource[] }> {
   const sources: ScrapedSource[] = [];
   const data: LevelsData = { targetRoleSalaries: [], comparableSalaries: [] };
-  const aliases = getCompanyAliases(companyName, companyContext);
+  const matchingContext = buildMatchingContext(companyContext, role, identityText);
+  const aliases = getCompanyAliases(companyName, matchingContext);
   const companyQuery = uniqueNonEmpty([companyName, companyContext]).join(' ');
 
   // Primary: Serper.dev / SerpAPI web search for salary data — snippets from salary sites
@@ -1221,7 +1263,7 @@ export async function scrapeLevels(
     const q = serpSalaryQueries[idx];
     const filteredResults = results.filter(r => {
       if (!r.link) return false;
-      if (idx === 0) return scoreCompanyMatch(companyName, aliases, companyContext, `${r.title} ${r.snippet}`, r.link) >= 3;
+      if (idx === 0) return scoreCompanyMatch(companyName, aliases, matchingContext, `${r.title} ${r.snippet}`, r.link) >= 3;
       return /salary\.com|glassdoor\.com|levels\.fyi|ziprecruiter\.com|indeed\.com|builtin\.com|comparably\.com/i.test(r.link);
     });
     if (!filteredResults.length) continue;
@@ -1251,7 +1293,7 @@ export async function scrapeLevels(
     $c('item').each((_, el) => {
       const title = $c(el).find('title').text();
       const desc = $c(el).find('description').text().replace(/<[^>]*>/g, '');
-      if (scoreCompanyMatch(companyName, aliases, companyContext, `${title} ${desc}`, '') < 3) return;
+      if (scoreCompanyMatch(companyName, aliases, matchingContext, `${title} ${desc}`, '') < 3) return;
       allText.push(`${title} ${desc}`);
     });
     const salaries = extractSalaries(allText.join(' '));
@@ -1408,6 +1450,7 @@ export async function scrapeBLS(
   role: string,
   location?: string,
   companyName?: string,
+  identityText?: string,
 ): Promise<{ data: BLSData; sources: ScrapedSource[] }> {
   const sources: ScrapedSource[] = [];
   const data: BLSData = {
@@ -1420,6 +1463,7 @@ export async function scrapeBLS(
     yearOverYearChange: 'N/A',
     locationData: '',
   };
+  const matchingContext = buildMatchingContext(role, identityText);
 
   const hasAuthoritativeBlsSource = () => sources.some(source => /bls\.gov/i.test(source.url));
 
@@ -1502,7 +1546,7 @@ export async function scrapeBLS(
   const allSalaryText = allSalaryResults.map(r => `${r.title} ${r.snippet}`).join(' ');
   for (const r of allSalaryResults) {
     const snippet = `${r.title} ${r.snippet}`;
-    const roleScore = scoreCompanyMatch(role, getCompanyAliases(role), undefined, snippet, r.link);
+    const roleScore = scoreCompanyMatch(role, getCompanyAliases(role), matchingContext, snippet, r.link);
     if (roleScore < 3 && !directMatch) continue;
     if (/\$[\d,]+|\d{2,3},\d{3}|per.?year|annual.?salary|average.?salary|median.?salary|median.?wage/i.test(snippet)) {
       sources.push({ url: r.link, type: 'bls', title: r.title.slice(0, 80), timestamp: new Date().toISOString() });
@@ -1851,6 +1895,7 @@ async function scrapeBlind(
 export async function scrapeSEC(
   companyName: string,
   companyContext?: string,
+  identityText?: string,
 ): Promise<{ data: SECData; sources: ScrapedSource[] }> {
   const sources: ScrapedSource[] = [];
   const data: SECData = {
@@ -1860,7 +1905,8 @@ export async function scrapeSEC(
     fundingSignals: [],
     financialSignals: [],
   };
-  const aliases = getCompanyAliases(companyName, companyContext);
+  const matchingContext = buildMatchingContext(companyContext, identityText);
+  const aliases = getCompanyAliases(companyName, matchingContext);
 
   // Try the exact name first; if no results, fall back to name variants
   const buildSecSearchUrl = (name: string, forms: string) =>
@@ -2031,7 +2077,7 @@ export async function scrapeSEC(
       const title = $fin(el).find('title').text();
       const description = $fin(el).find('description').text().replace(/<[^>]*>/g, '');
       const source = $fin(el).find('source').text();
-      if (!mentionsAnyCompanyAlias(aliases, title, description, source)) return;
+      if (scoreCompanyMatch(companyName, aliases, matchingContext, `${title} ${description} ${source}`, '') < 4) return;
       const combined = `${title} ${description}`;
       const revM = combined.match(/revenue[^$\n]*\$\s*([\d.]+)\s*(billion|million|B|M)\b/gi);
       if (revM) data.financialSignals.push(...revM.slice(0, 2).map(m => m.trim().slice(0, 120)));
@@ -2050,7 +2096,7 @@ export async function scrapeSEC(
       const title = $fund(el).find('title').text();
       const description = $fund(el).find('description').text().replace(/<[^>]*>/g, '');
       const source = $fund(el).find('source').text();
-      if (!mentionsAnyCompanyAlias(aliases, title, description, source)) return;
+      if (scoreCompanyMatch(companyName, aliases, matchingContext, `${title} ${description} ${source}`, '') < 4) return;
       const combined = `${title} ${description}`;
       const fundM = combined.match(/(?:raised|funding|series|invested)[^$\n]*\$\s*([\d.]+)\s*(?:billion|million|B|M)[^\n]*/gi);
       if (fundM) data.fundingSignals.push(...fundM.slice(0, 2).map(m => m.trim().slice(0, 150)));
@@ -2087,7 +2133,7 @@ export async function scrapeSEC(
     const text = `${r.title} ${r.snippet}`;
     const fromTrustedWarnSource =
       /warn\.workforcegps\.org|edd\.ca\.gov|labor\.ny\.gov|mass\.gov|nj\.gov|pa\.gov|illinois\.gov|texas\.gov|sec\.gov|ir\./i.test(r.link);
-    if (!mentionsAnyCompanyAlias(aliases, r.title, r.snippet)) continue;
+    if (scoreCompanyMatch(companyName, aliases, matchingContext, `${r.title} ${r.snippet}`, r.link) < 4) continue;
     if (!fromTrustedWarnSource) continue;
     if (/warn act|mass layoff|plant closing|workforce reduction/i.test(text)) {
       const dateM = text.match(/\b(20\d\d)\b/);
@@ -2110,7 +2156,7 @@ export async function scrapeSEC(
   const layoffsFyiRes = await searchWeb(`site:layoffs.fyi ${secCompanyQ} layoff`, 4);
   for (const r of layoffsFyiRes) {
     if (!r.link.includes('layoffs.fyi')) continue;
-    if (!mentionsAnyCompanyAlias(aliases, r.title, r.snippet)) continue;
+    if (scoreCompanyMatch(companyName, aliases, matchingContext, `${r.title} ${r.snippet}`, r.link) < 4) continue;
     const text = `${r.title} ${r.snippet}`;
     const countM = text.match(/(\d[\d,]+)\s*(?:employees?|workers?|jobs?|people)/i);
     const dateM = text.match(/\b(20\d\d)\b/);
@@ -2122,7 +2168,7 @@ export async function scrapeSEC(
   const cbResults = await searchWeb(`site:crunchbase.com ${secCompanyQ} funding investors`, 5);
   for (const r of cbResults) {
     if (!r.link.includes('crunchbase.com/organization/')) continue;
-    if (!mentionsAnyCompanyAlias(aliases, r.title, r.snippet, r.link)) continue;
+    if (scoreCompanyMatch(companyName, aliases, matchingContext, `${r.title} ${r.snippet}`, r.link) < 4) continue;
     const text = `${r.title} ${r.snippet}`;
     const fundM = text.match(/\$[\d.]+\s*(?:B|M|billion|million)\s*(?:total funding|raised|in funding)/i);
     if (fundM) data.fundingSignals.push(`Crunchbase: ${fundM[0].trim()}`);
@@ -2140,7 +2186,7 @@ export async function scrapeSEC(
   );
   for (const r of parentResults) {
     const text = `${r.title} ${r.snippet}`;
-    if (!mentionsAnyCompanyAlias(aliases, r.title, r.snippet)) continue;
+    if (scoreCompanyMatch(companyName, aliases, matchingContext, `${r.title} ${r.snippet}`, r.link) < 4) continue;
     // Match: "subsidiary of X", "division of X", "acquired by X", etc.
     const parentM = text.match(
       /(?:subsidiary of|division of|acquired by|owned by|parent company[:\s]+|part of)\s+([A-Z][A-Za-z0-9\s,&.']+?)(?:\.|,|\s+(?:in|for|on|with|and)\s|$)/i,
@@ -2538,10 +2584,11 @@ async function fetchEdgarFacts(companyName: string): Promise<CompanyFactsData | 
 // COURTLISTENER_TOKEN env var (free at courtlistener.com). Skips gracefully
 // if token is absent.
 
-async function fetchCourtListener(companyName: string, companyContext?: string): Promise<CourtCase[]> {
+async function fetchCourtListener(companyName: string, companyContext?: string, identityText?: string): Promise<CourtCase[]> {
   const token = process.env.COURTLISTENER_KEY;
   if (!token) return [];
-  const aliases = getCompanyAliases(companyName, companyContext);
+  const matchingContext = buildMatchingContext(companyContext, identityText);
+  const aliases = getCompanyAliases(companyName, matchingContext);
 
   type CLResult = {
     caseName?: string;
@@ -2581,7 +2628,7 @@ async function fetchCourtListener(companyName: string, companyContext?: string):
       const title = r.caseName ?? '';
       if (!title || seen.has(title)) continue;
       if (!mentionsAnyCompanyAlias(aliases, title, r.snippet)) continue;
-      if (scoreCompanyMatch(companyName, aliases, companyContext, `${title} ${r.snippet ?? ''}`, r.absolute_url ?? '') < 4) continue;
+      if (scoreCompanyMatch(companyName, aliases, matchingContext, `${title} ${r.snippet ?? ''}`, r.absolute_url ?? '') < 4) continue;
 
       seen.add(title);
 
@@ -2606,12 +2653,48 @@ async function fetchCourtListener(companyName: string, companyContext?: string):
   return cases.slice(0, 6);
 }
 
+export function extractJobPostingFromText(text: string, companyName: string, role: string): JobPostingData {
+  const fullText = text.replace(/\s+/g, ' ').trim().slice(0, 12000);
+  const salaryMatch = fullText.match(/\$\s*([\d,]+)\s*[kK]?\s*(?:[-–—to]+)\s*\$?\s*([\d,]+)\s*[kK]?/);
+  let salaryRange: { min: number; max: number } | null = null;
+  if (salaryMatch) {
+    let min = parseInt(salaryMatch[1].replace(/,/g, ''), 10);
+    let max = parseInt(salaryMatch[2].replace(/,/g, ''), 10);
+    if (min < 1000) { min *= 1000; max *= 1000; }
+    if (max > min) salaryRange = { min, max };
+  }
+
+  let remotePolicy = 'Not specified';
+  if (/\bfully remote\b|\bremote.?first\b/i.test(fullText)) remotePolicy = 'Remote';
+  else if (/\bhybrid\b/i.test(fullText)) remotePolicy = 'Hybrid';
+  else if (/on.?site|in.?office|in.?person|required to be in/i.test(fullText)) remotePolicy = 'On-site';
+  else if (/remote/i.test(fullText)) remotePolicy = 'Remote (unconfirmed)';
+
+  const requirementsMatch = fullText.match(/(?:require[dm]?s?|qualifications?|must have)[:\s]+([\s\S]{80,1200}?)(?=responsibilit|preferred|nice.to|benefit|about us|who we)/i);
+  const responsibilitiesMatch = fullText.match(/(?:responsibilit|you will|what you.ll do|role overview)[:\s]+([\s\S]{80,1200}?)(?=require|qualif|benefit|about us|who we)/i);
+
+  return {
+    title: role,
+    company: companyName,
+    location: '',
+    salaryRange,
+    requirements: requirementsMatch ? requirementsMatch[1].split(/[•\n\-\*]/).map(s => s.trim()).filter(s => s.length > 8).slice(0, 12) : [],
+    responsibilities: responsibilitiesMatch ? responsibilitiesMatch[1].split(/[•\n\-\*]/).map(s => s.trim()).filter(s => s.length > 8).slice(0, 12) : [],
+    benefits: [],
+    remotePolicy,
+    postedDate: '',
+    fullText,
+    isRepost: false,
+  };
+}
+
 // ─── GITHUB ───────────────────────────────────────────────────────────────────
 // Looks up a company's GitHub org to assess engineering culture signals.
 // Uses GITHUB_KEY env var for higher rate limit (5k/hr vs 60/hr). Optional.
 
-async function fetchGitHub(companyName: string, companyContext?: string): Promise<GitHubData | null> {
+async function fetchGitHub(companyName: string, companyContext?: string, identityText?: string): Promise<GitHubData | null> {
   try {
+    const matchingContext = buildMatchingContext(companyContext, identityText);
     const headers: Record<string, string> = {
       'User-Agent': 'FairLadder.ai',
       Accept: 'application/vnd.github.v3+json',
@@ -2637,7 +2720,7 @@ async function fetchGitHub(companyName: string, companyContext?: string): Promis
       orgs[0];
 
     if (!bestOrg) return null;
-    if (scoreCompanyMatch(companyName, getCompanyAliases(companyName, companyContext), companyContext, bestOrg.login, `https://github.com/${bestOrg.login}`) < 3) {
+    if (scoreCompanyMatch(companyName, getCompanyAliases(companyName, matchingContext), matchingContext, bestOrg.login, `https://github.com/${bestOrg.login}`) < 3) {
       return null;
     }
 
@@ -2683,11 +2766,12 @@ const JUNK_DOMAINS = [
   'academia.edu', 'docslib.org', 'issuu.com',
 ];
 
-async function fetchNLRB(companyName: string, companyContext?: string): Promise<string[]> {
-  const aliases = getCompanyAliases(companyName, companyContext);
+async function fetchNLRB(companyName: string, companyContext?: string, identityText?: string): Promise<string[]> {
+  const matchingContext = buildMatchingContext(companyContext, identityText);
+  const aliases = getCompanyAliases(companyName, matchingContext);
   const [nlrbSite, nlrbGeneral] = await Promise.all([
-    searchWeb(`site:nlrb.gov "${companyName}" ${companyContext || ''}`, 5),
-    searchWeb(`site:nlrb.gov "${companyName}" ${companyContext || ''} NLRB "unfair labor practice" OR "union election" OR "labor board"`, 4),
+    searchWeb(`site:nlrb.gov "${companyName}" ${matchingContext || ''}`, 5),
+    searchWeb(`site:nlrb.gov "${companyName}" ${matchingContext || ''} NLRB "unfair labor practice" OR "union election" OR "labor board"`, 4),
   ]);
 
   const signals: string[] = [];
@@ -2712,7 +2796,7 @@ async function fetchNLRB(companyName: string, companyContext?: string): Promise<
     const mentionsCompanyName = mentionsAnyCompanyAlias(aliases, r.title, r.snippet);
     if (isEntityNameClash(companyName, r.title, r.snippet)) continue;
     if (!fromNLRB) continue;
-    if (scoreCompanyMatch(companyName, aliases, companyContext, `${r.title} ${r.snippet ?? ''}`, r.link) < 4) continue;
+    if (scoreCompanyMatch(companyName, aliases, matchingContext, `${r.title} ${r.snippet ?? ''}`, r.link) < 4) continue;
 
     if (hasNLRBSignal && mentionsCompanyName) {
       signals.push(`${r.title}${r.snippet ? ` — ${r.snippet.slice(0, 120)}` : ''} [URL:${r.link}]`);
@@ -2726,11 +2810,12 @@ async function fetchNLRB(companyName: string, companyContext?: string): Promise<
 // Searches OSHA inspection and violation records via Serper.
 // No additional API key needed.
 
-async function fetchOSHA(companyName: string, companyContext?: string): Promise<string[]> {
-  const aliases = getCompanyAliases(companyName, companyContext);
+async function fetchOSHA(companyName: string, companyContext?: string, identityText?: string): Promise<string[]> {
+  const matchingContext = buildMatchingContext(companyContext, identityText);
+  const aliases = getCompanyAliases(companyName, matchingContext);
   const [oshaSite, oshaGeneral] = await Promise.all([
-    searchWeb(`site:osha.gov "${companyName}" ${companyContext || ''}`, 4),
-    searchWeb(`site:osha.gov "${companyName}" ${companyContext || ''} OSHA violation citation inspection penalty`, 4),
+    searchWeb(`site:osha.gov "${companyName}" ${matchingContext || ''}`, 4),
+    searchWeb(`site:osha.gov "${companyName}" ${matchingContext || ''} OSHA violation citation inspection penalty`, 4),
   ]);
 
   const signals: string[] = [];
@@ -2754,7 +2839,7 @@ async function fetchOSHA(companyName: string, companyContext?: string): Promise<
     const mentionsCompanyName = mentionsAnyCompanyAlias(aliases, r.title, r.snippet);
     if (isEntityNameClash(companyName, r.title, r.snippet)) continue;
     if (!fromOSHA) continue;
-    if (scoreCompanyMatch(companyName, aliases, companyContext, `${r.title} ${r.snippet ?? ''}`, r.link) < 4) continue;
+    if (scoreCompanyMatch(companyName, aliases, matchingContext, `${r.title} ${r.snippet ?? ''}`, r.link) < 4) continue;
     const recordSpecific =
       /inspection|citation|penalt|fine|fatal|injury|illness|establishment/i.test(r.title) ||
       /inspection|citation|penalt|fine|fatal|injury|illness|establishment/i.test(r.snippet ?? '');
@@ -2829,16 +2914,17 @@ async function fetchLCA(companyName: string): Promise<LCAData | null> {
 export async function scrapeEnrichment(
   companyName: string,
   companyContext?: string,
+  identityText?: string,
 ): Promise<{ data: EnrichmentData; sources: ScrapedSource[] }> {
   const sources: ScrapedSource[] = [];
 
   // All six run in parallel
   const [companyFacts, courtCases, github, nlrbSignals, oshaSignals, lca] = await Promise.all([
     fetchEdgarFacts(companyName),
-    fetchCourtListener(companyName, companyContext),
-    fetchGitHub(companyName, companyContext),
-    fetchNLRB(companyName, companyContext),
-    fetchOSHA(companyName, companyContext),
+    fetchCourtListener(companyName, companyContext, identityText),
+    fetchGitHub(companyName, companyContext, identityText),
+    fetchNLRB(companyName, companyContext, identityText),
+    fetchOSHA(companyName, companyContext, identityText),
     fetchLCA(companyName),
   ]);
 
@@ -2913,7 +2999,7 @@ export async function scrapeEnrichment(
       oshaSignals: oshaSignals.length > 0 ? oshaSignals : undefined,
       lca: lca ?? undefined,
     },
-    sources,
+    sources: dedupeSources(sources),
   };
 }
 

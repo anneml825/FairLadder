@@ -5,9 +5,9 @@ export const runtime = 'nodejs';
 export const maxDuration = 40;
 
 export async function POST(req: NextRequest) {
-  const { companyName, role, location, companyContext } = await req.json();
+  const { companyName, role, location, companyContext, identityText } = await req.json();
   if (!companyName) return NextResponse.json({ error: 'companyName required' }, { status: 400 });
 
-  const result = await scrapeLevels(companyName, role || '', location || '', companyContext);
+  const result = await scrapeLevels(companyName, role || '', location || '', companyContext, identityText);
   return NextResponse.json(result);
 }

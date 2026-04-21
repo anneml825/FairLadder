@@ -230,36 +230,37 @@ export default function AnalyzePage() {
       // confuse "Meridian AI startup" with "Meridian Idaho" or "Meridian IT".
       const jobFullText = jobPosting?.fullText || request.jobText || '';
       const companyContext = inferCompanyContext(jobFullText) || initialCompanyContext;
+      const identityText = [request.companyName, role, companyContext, jobFullText.slice(0, 1800)].filter(Boolean).join('\n');
 
       // ── 2. Fire all scraping calls in PARALLEL ────────────────────────────
       const [newsRes, redditRes, glassdoorRes, levelsRes, blsRes, secRes, enrichRes] = await Promise.all([
 
         fetchStep<{ results: GoogleNewsResult[]; sources: ScrapedSource[] }>(
-          'news', '/api/scrape/news', { companyName: request.companyName, role, companyContext }, signal,
+          'news', '/api/scrape/news', { companyName: request.companyName, role, companyContext, identityText }, signal,
         ),
 
         fetchStep<{ threads: RedditThread[]; sources: ScrapedSource[] }>(
-          'reddit', '/api/scrape/reddit', { companyName: request.companyName, role, companyContext }, signal,
+          'reddit', '/api/scrape/reddit', { companyName: request.companyName, role, companyContext, identityText }, signal,
         ),
 
         fetchStep<{ data: GlassdoorData; sources: ScrapedSource[] }>(
-          'glassdoor', '/api/scrape/glassdoor', { companyName: request.companyName, role, companyContext }, signal,
+          'glassdoor', '/api/scrape/glassdoor', { companyName: request.companyName, role, companyContext, identityText }, signal,
         ),
 
         fetchStep<{ data: LevelsData; sources: ScrapedSource[] }>(
-          'levels', '/api/scrape/levels', { companyName: request.companyName, role, location: request.location, companyContext }, signal,
+          'levels', '/api/scrape/levels', { companyName: request.companyName, role, location: request.location, companyContext, identityText }, signal,
         ),
 
         fetchStep<{ data: BLSData; sources: ScrapedSource[] }>(
-          'bls', '/api/scrape/bls', { role: role || 'professional worker', location: request.location, companyName: request.companyName, companyContext }, signal,
+          'bls', '/api/scrape/bls', { role: role || 'professional worker', location: request.location, companyName: request.companyName, companyContext, identityText }, signal,
         ),
 
         fetchStep<{ data: SECData; sources: ScrapedSource[] }>(
-          'sec', '/api/scrape/sec', { companyName: request.companyName, companyContext }, signal,
+          'sec', '/api/scrape/sec', { companyName: request.companyName, companyContext, identityText }, signal,
         ),
 
         fetchStep<{ data: EnrichmentData; sources: ScrapedSource[] }>(
-          'enrich', '/api/scrape/enrich', { companyName: request.companyName, companyContext }, signal,
+          'enrich', '/api/scrape/enrich', { companyName: request.companyName, companyContext, identityText }, signal,
         ),
       ]);
 

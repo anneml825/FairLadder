@@ -5,9 +5,9 @@ export const runtime = 'nodejs';
 export const maxDuration = 20;
 
 export async function POST(req: NextRequest) {
-  const { companyName, role, companyContext } = await req.json();
+  const { companyName, role, companyContext, identityText } = await req.json();
   if (!companyName) return NextResponse.json({ error: 'companyName required' }, { status: 400 });
 
-  const result = await scrapeGoogleNews(companyName, role, companyContext);
+  const result = await scrapeGoogleNews(companyName, role, companyContext, identityText);
   return NextResponse.json(result);
 }
