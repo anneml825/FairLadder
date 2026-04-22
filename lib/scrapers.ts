@@ -259,16 +259,21 @@ async function resolvePublicEntity(
   identityText?: string,
 ): Promise<{ entityName: string; companyFacts: CompanyFactsData | null }> {
   const matchingContext = buildMatchingContext(companyContext, identityText);
-  const directAliases = getCompanyAliases(companyName, matchingContext).slice(0, 5);
+  const looksLikeLegalEntity = /\b(holdings?|group|inc\.?|corporation|corp\.?|limited|ltd\.?|llc|plc)\b/i.test(companyName);
+  const directAliases = getCompanyAliases(companyName, matchingContext).slice(0, looksLikeLegalEntity ? 2 : 4);
 
   for (const alias of directAliases) {
     const facts = await fetchEdgarFacts(alias);
     if (facts?.isPublic) return { entityName: alias, companyFacts: facts };
   }
 
+  if (looksLikeLegalEntity) {
+    return { entityName: companyName, companyFacts: null };
+  }
+
   const discoveryResults = await searchWeb(
     `"${companyName}" investor relations OR annual report OR SEC filing OR parent company OR owner`,
-    8,
+    6,
   );
 
   const candidates = new Map<string, number>();
@@ -2149,9 +2154,34 @@ export async function scrapeSEC(
     ? `("${aliases[0]}" OR "${aliases[1]}")${secCtx}`
     : `"${secEntityName}"${secCtx}`;
 
-  // Financial signals via Google News RSS
   const finQuery = `${secCompanyQ} revenue earnings profit financial results 2024 2025`;
-  const finRss = await fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(finQuery)}&hl=en-US&gl=US&ceid=US:en`);
+  const fundQuery = `${secCompanyQ} funding raised investment series valuation`;
+  const hiringQuery = `"${secEntityName}" hiring "open roles" OR "job openings" OR headcount OR "growing team"`;
+  const warnQueries = [
+    `${secCompanyQ} WARN Act layoff notice site:warn.workforcegps.org OR site:edd.ca.gov OR site:labor.ny.gov`,
+    `${secCompanyQ} WARN Act "mass layoff" OR "plant closing" filing`,
+  ];
+
+  const [
+    finRss,
+    fundRss,
+    hiringRss,
+    warnRes1,
+    warnRes2,
+    layoffsFyiRes,
+    cbResults,
+    parentResults,
+  ] = await Promise.all([
+    fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(finQuery)}&hl=en-US&gl=US&ceid=US:en`),
+    fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(fundQuery)}&hl=en-US&gl=US&ceid=US:en`),
+    fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(hiringQuery)}&hl=en-US&gl=US&ceid=US:en`),
+    searchWeb(warnQueries[0], 4),
+    searchWeb(warnQueries[1], 4),
+    searchWeb(`site:layoffs.fyi ${secCompanyQ} layoff`, 3),
+    searchWeb(`site:crunchbase.com ${secCompanyQ} funding investors`, 4),
+    searchWeb(`${secCompanyQ} "subsidiary of" OR "division of" OR "acquired by" OR "owned by" OR "parent company"`, 4),
+  ]);
+
   if (finRss && finRss.length > 500) {
     const $fin = cheerio.load(finRss, { xmlMode: true });
     $fin('item').each((_, el) => {
@@ -2168,9 +2198,6 @@ export async function scrapeSEC(
     sources.push({ url: `https://news.google.com/rss/search?q=${encodeURIComponent(finQuery)}`, type: 'sec', title: `${secEntityName} Financial Results`, timestamp: new Date().toISOString() });
   }
 
-  // Funding and investment signals via Google News RSS
-  const fundQuery = `${secCompanyQ} funding raised investment series valuation`;
-  const fundRss = await fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(fundQuery)}&hl=en-US&gl=US&ceid=US:en`);
   if (fundRss && fundRss.length > 500) {
     const $fund = cheerio.load(fundRss, { xmlMode: true });
     $fund('item').each((_, el) => {
@@ -2187,9 +2214,6 @@ export async function scrapeSEC(
     sources.push({ url: `https://news.google.com/rss/search?q=${encodeURIComponent(fundQuery)}`, type: 'sec', title: `${secEntityName} Funding`, timestamp: new Date().toISOString() });
   }
 
-  // Hiring velocity signal — news about open roles is a health/growth indicator
-  const hiringQuery = `"${secEntityName}" hiring "open roles" OR "job openings" OR headcount OR "growing team"`;
-  const hiringRss = await fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(hiringQuery)}&hl=en-US&gl=US&ceid=US:en`);
   if (hiringRss && hiringRss.length > 500) {
     const $h = cheerio.load(hiringRss, { xmlMode: true });
     $h('item').each((_, el) => {
@@ -2204,12 +2228,6 @@ export async function scrapeSEC(
   sources.push({ url: edgarUrl, type: 'sec', title: `SEC EDGAR - ${secEntityName} filings`, timestamp: new Date().toISOString() });
 
   // WARN Act — federally mandated mass layoff notices (50+ employees, 60-day advance notice)
-  const warnQueries = [
-    // Quote the company name to force exact-match — prevents matching partial names on listing pages
-    `${secCompanyQ} WARN Act layoff notice site:warn.workforcegps.org OR site:edd.ca.gov OR site:labor.ny.gov`,
-    `${secCompanyQ} WARN Act "mass layoff" OR "plant closing" filing`,
-  ];
-  const [warnRes1, warnRes2] = await Promise.all(warnQueries.map(q => searchWeb(q, 5)));
   for (const r of [...warnRes1, ...warnRes2]) {
     const text = `${r.title} ${r.snippet}`;
     const fromTrustedWarnSource =
@@ -2234,7 +2252,6 @@ export async function scrapeSEC(
     }
   }
   // layoffs.fyi — crowd-sourced, comprehensive for tech layoffs
-  const layoffsFyiRes = await searchWeb(`site:layoffs.fyi ${secCompanyQ} layoff`, 4);
   for (const r of layoffsFyiRes) {
     if (!r.link.includes('layoffs.fyi')) continue;
     if (scoreCompanyMatch(companyName, aliases, matchingContext, `${r.title} ${r.snippet}`, r.link) < 4) continue;
@@ -2246,7 +2263,6 @@ export async function scrapeSEC(
   }
 
   // Crunchbase — use context to disambiguate (e.g. "Meridian AI" not "Meridian Apps")
-  const cbResults = await searchWeb(`site:crunchbase.com ${secCompanyQ} funding investors`, 5);
   for (const r of cbResults) {
     if (!r.link.includes('crunchbase.com/organization/')) continue;
     if (scoreCompanyMatch(companyName, aliases, matchingContext, `${r.title} ${r.snippet}`, r.link) < 4) continue;
@@ -2261,10 +2277,6 @@ export async function scrapeSEC(
   }
   // Parent company / subsidiary detection
   // Finds "acquired by", "division of", "subsidiary of", "owned by" relationships
-  const parentResults = await searchWeb(
-    `${secCompanyQ} "subsidiary of" OR "division of" OR "acquired by" OR "owned by" OR "parent company"`,
-    6,
-  );
   for (const r of parentResults) {
     const text = `${r.title} ${r.snippet}`;
     if (scoreCompanyMatch(companyName, aliases, matchingContext, `${r.title} ${r.snippet}`, r.link) < 4) continue;
@@ -2821,6 +2833,16 @@ async function fetchGitHub(companyName: string, companyContext?: string, identit
         timeout: 6000,
       }),
     ]);
+
+    const orgIdentityText = [
+      bestOrg.login,
+      orgRes.data?.name,
+      orgRes.data?.description,
+      orgRes.data?.blog,
+    ].filter(Boolean).join(' ');
+    if (scoreCompanyMatch(companyName, getCompanyAliases(companyName, matchingContext), matchingContext, orgIdentityText, `https://github.com/${bestOrg.login}`) < 4) {
+      return null;
+    }
 
     type GHRepo = { pushed_at: string; language?: string; stargazers_count: number };
     const repos: GHRepo[] = reposRes.data ?? [];
