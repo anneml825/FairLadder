@@ -244,6 +244,60 @@ function buildMatchingContext(...texts: Array<string | undefined>): string | und
   return joined || undefined;
 }
 
+const LEGAL_ENTITY_CANDIDATE_RE = /\b([A-Z][A-Za-z0-9&.,' -]{2,80}\b(?:Holdings?|Group|Inc\.?|Corporation|Corp\.?|Limited|Ltd\.?|LLC|PLC))\b/g;
+
+function cleanCandidateEntityName(value: string): string {
+  return value
+    .replace(/\s+/g, ' ')
+    .replace(/^[\s,.;:()"'`-]+|[\s,.;:()"'`-]+$/g, '')
+    .trim();
+}
+
+async function resolvePublicEntity(
+  companyName: string,
+  companyContext?: string,
+  identityText?: string,
+): Promise<{ entityName: string; companyFacts: CompanyFactsData | null }> {
+  const matchingContext = buildMatchingContext(companyContext, identityText);
+  const directAliases = getCompanyAliases(companyName, matchingContext).slice(0, 5);
+
+  for (const alias of directAliases) {
+    const facts = await fetchEdgarFacts(alias);
+    if (facts?.isPublic) return { entityName: alias, companyFacts: facts };
+  }
+
+  const discoveryResults = await searchWeb(
+    `"${companyName}" investor relations OR annual report OR SEC filing OR parent company OR owner`,
+    8,
+  );
+
+  const candidates = new Map<string, number>();
+  for (const result of discoveryResults) {
+    const text = `${result.title} ${result.snippet}`;
+    const score = scoreCompanyMatch(companyName, directAliases, matchingContext, text, result.link);
+    if (score < 3) continue;
+
+    for (const match of text.matchAll(LEGAL_ENTITY_CANDIDATE_RE)) {
+      const candidate = cleanCandidateEntityName(match[1] || '');
+      if (!candidate || candidate.toLowerCase() === companyName.toLowerCase()) continue;
+      const boostedScore = score + (/investor relations|annual report|sec|nasdaq|nyse|earnings/i.test(text) ? 2 : 0);
+      candidates.set(candidate, Math.max(candidates.get(candidate) ?? 0, boostedScore));
+    }
+  }
+
+  const rankedCandidates = [...candidates.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([candidate]) => candidate)
+    .slice(0, 4);
+
+  for (const candidate of rankedCandidates) {
+    const facts = await fetchEdgarFacts(candidate);
+    if (facts?.isPublic) return { entityName: candidate, companyFacts: facts };
+  }
+
+  return { entityName: companyName, companyFacts: null };
+}
+
 const CONFLICTING_CONTEXTS: Record<string, string[]> = {
   crypto: ['energy', 'robotics', 'defense', 'healthcare', 'sports'],
   energy: ['crypto', 'robotics', 'media'],
@@ -1923,14 +1977,23 @@ export async function scrapeSEC(
     fundingSignals: [],
     financialSignals: [],
   };
+  const resolvedPublicEntity = await resolvePublicEntity(companyName, companyContext, identityText);
+  const secEntityName = resolvedPublicEntity.entityName;
   const matchingContext = buildMatchingContext(companyContext, identityText);
-  const aliases = getCompanyAliases(companyName, matchingContext);
+  const aliases = uniqueNonEmpty([
+    ...getCompanyAliases(companyName, matchingContext),
+    ...getCompanyAliases(secEntityName, matchingContext),
+  ]);
+
+  if (resolvedPublicEntity.companyFacts?.isPublic && secEntityName.toLowerCase() !== companyName.toLowerCase()) {
+    data.financialSignals.push(`Public-company context resolved to ${secEntityName}`);
+  }
 
   // Try the exact name first; if no results, fall back to name variants
   const buildSecSearchUrl = (name: string, forms: string) =>
     `https://efts.sec.gov/LATEST/search-index?q=%22${encodeURIComponent(name)}%22&dateRange=custom&startdt=${new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]}&enddt=${new Date().toISOString().split('T')[0]}&forms=${forms}`;
 
-  let searchUrl = buildSecSearchUrl(companyName, '8-K');
+  let searchUrl = buildSecSearchUrl(secEntityName, '8-K');
   let html = '';
   for (const variant of aliases) {
     searchUrl = buildSecSearchUrl(variant, '8-K');
@@ -1954,10 +2017,10 @@ export async function scrapeSEC(
         const entityId = src?.entity_id || '';
         const filingUrl = accNo
           ? `https://www.sec.gov/Archives/edgar/data/${entityId}/${accNo}/${accNo}-index.htm`
-          : `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=${encodeURIComponent(companyName)}&type=8-K`;
+          : `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=${encodeURIComponent(secEntityName)}&type=8-K`;
 
         const filingTitle = src?.file_date
-          ? `${formType} filing - ${src?.display_names?.[0] || companyName}`
+          ? `${formType} filing - ${src?.display_names?.[0] || secEntityName}`
           : `SEC ${formType}`;
 
         const descLower = description.toLowerCase();
@@ -2051,7 +2114,7 @@ export async function scrapeSEC(
   // Annual/Quarterly filings (10-K, 10-Q) — key for public companies
   const oneYearAgo = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
   const today = new Date().toISOString().split('T')[0];
-  let annualUrl = `https://efts.sec.gov/LATEST/search-index?q=%22${encodeURIComponent(companyName)}%22&forms=10-K,10-Q&dateRange=custom&startdt=${oneYearAgo}&enddt=${today}`;
+  let annualUrl = `https://efts.sec.gov/LATEST/search-index?q=%22${encodeURIComponent(secEntityName)}%22&forms=10-K,10-Q&dateRange=custom&startdt=${oneYearAgo}&enddt=${today}`;
   let annualHtml = '';
   for (const variant of aliases) {
     annualUrl = `https://efts.sec.gov/LATEST/search-index?q=%22${encodeURIComponent(variant)}%22&forms=10-K,10-Q&dateRange=custom&startdt=${oneYearAgo}&enddt=${today}`;
@@ -2069,9 +2132,9 @@ export async function scrapeSEC(
         const accNo = src?.accession_no?.replace(/-/g, '') || '';
         const filingUrl = accNo
           ? `https://www.sec.gov/Archives/edgar/data/${src?.entity_id}/${accNo}/${accNo}-index.htm`
-          : `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=${encodeURIComponent(companyName)}&type=${formType}`;
-        data.filings.push({ date: filingDate, type: formType, description: `${formType} — ${companyName} (${filingDate})`, url: filingUrl });
-        sources.push({ url: filingUrl, type: 'sec', title: `${companyName} ${formType} — ${filingDate}`, timestamp: filingDate || new Date().toISOString() });
+          : `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=${encodeURIComponent(secEntityName)}&type=${formType}`;
+        data.filings.push({ date: filingDate, type: formType, description: `${formType} — ${secEntityName} (${filingDate})`, url: filingUrl });
+        sources.push({ url: filingUrl, type: 'sec', title: `${secEntityName} ${formType} — ${filingDate}`, timestamp: filingDate || new Date().toISOString() });
         // If we found annual filings, flag company as public
         if (!data.financialSignals.includes('Public company — SEC annual filings available')) {
           data.financialSignals.push('Public company — SEC annual filings available');
@@ -2084,7 +2147,7 @@ export async function scrapeSEC(
   const secCtx = companyContext ? ` ${companyContext}` : '';
   const secCompanyQ = aliases.length > 1
     ? `("${aliases[0]}" OR "${aliases[1]}")${secCtx}`
-    : `"${companyName}"${secCtx}`;
+    : `"${secEntityName}"${secCtx}`;
 
   // Financial signals via Google News RSS
   const finQuery = `${secCompanyQ} revenue earnings profit financial results 2024 2025`;
@@ -2102,7 +2165,7 @@ export async function scrapeSEC(
       const profitM = combined.match(/(?:profit|loss|net income)[^$\n]*\$\s*([\d.]+)\s*(?:billion|million)/gi);
       if (profitM) data.financialSignals.push(...profitM.slice(0, 1).map(m => m.trim().slice(0, 120)));
     });
-    sources.push({ url: `https://news.google.com/rss/search?q=${encodeURIComponent(finQuery)}`, type: 'sec', title: `${companyName} Financial Results`, timestamp: new Date().toISOString() });
+    sources.push({ url: `https://news.google.com/rss/search?q=${encodeURIComponent(finQuery)}`, type: 'sec', title: `${secEntityName} Financial Results`, timestamp: new Date().toISOString() });
   }
 
   // Funding and investment signals via Google News RSS
@@ -2121,11 +2184,11 @@ export async function scrapeSEC(
       const headM = combined.match(/(\d[\d,]+)\s+employees/gi);
       if (headM) data.financialSignals.push(...headM.slice(0, 1));
     });
-    sources.push({ url: `https://news.google.com/rss/search?q=${encodeURIComponent(fundQuery)}`, type: 'sec', title: `${companyName} Funding`, timestamp: new Date().toISOString() });
+    sources.push({ url: `https://news.google.com/rss/search?q=${encodeURIComponent(fundQuery)}`, type: 'sec', title: `${secEntityName} Funding`, timestamp: new Date().toISOString() });
   }
 
   // Hiring velocity signal — news about open roles is a health/growth indicator
-  const hiringQuery = `"${companyName}" hiring "open roles" OR "job openings" OR headcount OR "growing team"`;
+  const hiringQuery = `"${secEntityName}" hiring "open roles" OR "job openings" OR headcount OR "growing team"`;
   const hiringRss = await fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(hiringQuery)}&hl=en-US&gl=US&ceid=US:en`);
   if (hiringRss && hiringRss.length > 500) {
     const $h = cheerio.load(hiringRss, { xmlMode: true });
@@ -2137,8 +2200,8 @@ export async function scrapeSEC(
   }
 
   // EDGAR full-text layoff search
-  const edgarUrl = `https://efts.sec.gov/LATEST/search-index?q=%22${encodeURIComponent(companyName)}%22+%22layoff%22&forms=8-K&dateRange=custom&startdt=${new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]}&enddt=${new Date().toISOString().split('T')[0]}`;
-  sources.push({ url: edgarUrl, type: 'sec', title: `SEC EDGAR - ${companyName} filings`, timestamp: new Date().toISOString() });
+  const edgarUrl = `https://efts.sec.gov/LATEST/search-index?q=%22${encodeURIComponent(secEntityName)}%22+%22layoff%22&forms=8-K&dateRange=custom&startdt=${new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]}&enddt=${new Date().toISOString().split('T')[0]}`;
+  sources.push({ url: edgarUrl, type: 'sec', title: `SEC EDGAR - ${secEntityName} filings`, timestamp: new Date().toISOString() });
 
   // WARN Act — federally mandated mass layoff notices (50+ employees, 60-day advance notice)
   const warnQueries = [
@@ -2940,12 +3003,15 @@ export async function scrapeEnrichment(
   companyName: string,
   companyContext?: string,
   identityText?: string,
+  parentCompany?: string,
 ): Promise<{ data: EnrichmentData; sources: ScrapedSource[] }> {
   const sources: ScrapedSource[] = [];
+  const resolvedPublicEntity = await resolvePublicEntity(parentCompany || companyName, companyContext, identityText);
+  const publicEntity = parentCompany || resolvedPublicEntity.entityName || companyName;
 
   // All six run in parallel
   const [companyFacts, courtCases, github, nlrbSignals, oshaSignals, lca] = await Promise.all([
-    fetchEdgarFacts(companyName),
+    resolvedPublicEntity.companyFacts ? Promise.resolve(resolvedPublicEntity.companyFacts) : fetchEdgarFacts(publicEntity),
     fetchCourtListener(companyName, companyContext, identityText),
     fetchGitHub(companyName, companyContext, identityText),
     fetchNLRB(companyName, companyContext, identityText),
@@ -2955,9 +3021,9 @@ export async function scrapeEnrichment(
 
   if (companyFacts?.isPublic) {
     sources.push({
-      url: `https://www.sec.gov/cgi-bin/browse-edgar?company=${encodeURIComponent(companyName)}&action=getcompany&type=10-K`,
+      url: `https://www.sec.gov/cgi-bin/browse-edgar?company=${encodeURIComponent(publicEntity)}&action=getcompany&type=10-K`,
       type: 'sec',
-      title: `${companyName} — SEC EDGAR 10-K`,
+      title: `${publicEntity} — SEC EDGAR 10-K`,
       timestamp: new Date().toISOString(),
     });
   }
@@ -2977,7 +3043,7 @@ export async function scrapeEnrichment(
     sources.push({
       url: `https://github.com/${github.orgHandle}`,
       type: 'sec',
-      title: `${companyName} — GitHub`,
+      title: `${publicEntity} — GitHub`,
       timestamp: new Date().toISOString(),
     });
   }

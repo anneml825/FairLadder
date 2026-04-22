@@ -4,6 +4,7 @@ import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   AnalysisRequest,
+  CompanyIdentity,
   GlassdoorData,
   LevelsData,
   BLSData,
@@ -14,6 +15,7 @@ import {
   JobPostingData,
   EnrichmentData,
 } from '@/lib/types';
+import { resolveCompanyIdentity } from '@/lib/company-identity';
 
 // ─── Step definitions ────────────────────────────────────────────────────────
 
@@ -140,6 +142,7 @@ export default function AnalyzePage() {
     const run = async () => {
       // ── 1. Job posting (only if URL provided) ────────────────────────────
       let jobPosting: JobPostingData | undefined;
+      let jobSources: ScrapedSource[] = [];
       const pastedJobText = request.jobText || '';
       const initialCompanyContext = inferCompanyContext(pastedJobText);
       if (request.jobUrl) {
@@ -155,6 +158,7 @@ export default function AnalyzePage() {
         }
         if (res) {
           jobPosting = res.data;
+          jobSources = res.sources || [];
           // User-supplied title wins outright
           if (request.jobTitle) {
             jobPosting = { ...res.data, title: request.jobTitle };
@@ -220,6 +224,7 @@ export default function AnalyzePage() {
           isRepost: false,
         };
         addSources(jobSearchRes?.sources?.length || 1);
+        jobSources = jobSearchRes?.sources || [];
         if (!signal.aborted) setStep('job', { status: 'done', count: 1 });
       }
 
@@ -229,38 +234,46 @@ export default function AnalyzePage() {
       // Extract disambiguating context from the job posting so scrapers don't
       // confuse "Meridian AI startup" with "Meridian Idaho" or "Meridian IT".
       const jobFullText = jobPosting?.fullText || request.jobText || '';
+      const companyIdentity: CompanyIdentity = resolveCompanyIdentity(request.companyName, jobFullText, request.jobUrl);
       const companyContext = inferCompanyContext(jobFullText) || initialCompanyContext;
-      const identityText = [request.companyName, role, companyContext, jobFullText.slice(0, 1800)].filter(Boolean).join('\n');
+      const identityText = [
+        `Employer brand: ${companyIdentity.employerBrand}`,
+        companyIdentity.parentCompany ? `Parent company: ${companyIdentity.parentCompany}` : '',
+        companyIdentity.relationshipSummary || '',
+        role,
+        companyContext,
+        jobFullText.slice(0, 1800),
+      ].filter(Boolean).join('\n');
 
       // ── 2. Fire all scraping calls in PARALLEL ────────────────────────────
       const [newsRes, redditRes, glassdoorRes, levelsRes, blsRes, secRes, enrichRes] = await Promise.all([
 
         fetchStep<{ results: GoogleNewsResult[]; sources: ScrapedSource[] }>(
-          'news', '/api/scrape/news', { companyName: request.companyName, role, companyContext, identityText }, signal,
+          'news', '/api/scrape/news', { companyName: companyIdentity.employerBrand, role, companyContext, identityText }, signal,
         ),
 
         fetchStep<{ threads: RedditThread[]; sources: ScrapedSource[] }>(
-          'reddit', '/api/scrape/reddit', { companyName: request.companyName, role, companyContext, identityText }, signal,
+          'reddit', '/api/scrape/reddit', { companyName: companyIdentity.employerBrand, role, companyContext, identityText }, signal,
         ),
 
         fetchStep<{ data: GlassdoorData; sources: ScrapedSource[] }>(
-          'glassdoor', '/api/scrape/glassdoor', { companyName: request.companyName, role, companyContext, identityText }, signal,
+          'glassdoor', '/api/scrape/glassdoor', { companyName: companyIdentity.employerBrand, role, companyContext, identityText }, signal,
         ),
 
         fetchStep<{ data: LevelsData; sources: ScrapedSource[] }>(
-          'levels', '/api/scrape/levels', { companyName: request.companyName, role, location: request.location, companyContext, identityText }, signal,
+          'levels', '/api/scrape/levels', { companyName: companyIdentity.employerBrand, role, location: request.location, companyContext, identityText }, signal,
         ),
 
         fetchStep<{ data: BLSData; sources: ScrapedSource[] }>(
-          'bls', '/api/scrape/bls', { role: role || 'professional worker', location: request.location, companyName: request.companyName, companyContext, identityText }, signal,
+          'bls', '/api/scrape/bls', { role: role || 'professional worker', location: request.location, companyName: companyIdentity.employerBrand, companyContext, identityText }, signal,
         ),
 
         fetchStep<{ data: SECData; sources: ScrapedSource[] }>(
-          'sec', '/api/scrape/sec', { companyName: request.companyName, companyContext, identityText }, signal,
+          'sec', '/api/scrape/sec', { companyName: companyIdentity.parentCompany || companyIdentity.employerBrand, companyContext, identityText, parentCompany: companyIdentity.parentCompany }, signal,
         ),
 
         fetchStep<{ data: EnrichmentData; sources: ScrapedSource[] }>(
-          'enrich', '/api/scrape/enrich', { companyName: request.companyName, companyContext, identityText }, signal,
+          'enrich', '/api/scrape/enrich', { companyName: companyIdentity.employerBrand, companyContext, identityText, parentCompany: companyIdentity.parentCompany }, signal,
         ),
       ]);
 
@@ -318,6 +331,7 @@ export default function AnalyzePage() {
 
       // ── 3. Aggregate all sources ──────────────────────────────────────────
       const allSources: ScrapedSource[] = [
+        ...jobSources,
         ...(newsRes?.sources || []),
         ...(redditRes?.sources || []),
         ...(glassdoorRes?.sources || []),
@@ -349,6 +363,7 @@ export default function AnalyzePage() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             request,
+            companyIdentity,
             scrapedData: {
               news: newsRes?.results || [],
               reddit: redditRes?.threads || [],

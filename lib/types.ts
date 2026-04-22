@@ -55,6 +55,17 @@ export interface EnrichmentData {
   lca?: LCAData;
 }
 
+export interface CompanyIdentity {
+  employerBrand: string;
+  legalEntity?: string;
+  parentCompany?: string;
+  officialDomain?: string;
+  investorRelationsDomain?: string;
+  aliases: string[];
+  parentAliases: string[];
+  relationshipSummary?: string;
+}
+
 export interface AnalysisRequest {
   jobUrl?: string;
   jobText?: string;
@@ -253,6 +264,7 @@ export interface IntelligenceBullet {
 export interface AnalysisResult {
   id: string;
   companyName: string;
+  companyIdentity?: CompanyIdentity;
   role: string;
   location: string;
   analyzedAt: string;

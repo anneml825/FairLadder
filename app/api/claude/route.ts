@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import {
   AnalysisRequest,
+  CompanyIdentity,
   GoogleNewsResult,
   RedditThread,
   GlassdoorData,
@@ -66,6 +67,7 @@ const FLAG_PHRASES: Array<{ phrase: string; pattern?: RegExp; explanation: strin
 
 interface ClaudeRequestBody {
   request: AnalysisRequest;
+  companyIdentity?: CompanyIdentity;
   scrapedData: {
     news: GoogleNewsResult[];
     reddit: RedditThread[];
@@ -81,7 +83,7 @@ interface ClaudeRequestBody {
 
 export async function POST(req: NextRequest) {
   const body: ClaudeRequestBody = await req.json();
-  const { request, scrapedData, sources } = body;
+  const { request, companyIdentity, scrapedData, sources } = body;
 
   const jobText = request.jobText || scrapedData.jobPosting?.fullText || 'Not provided';
   // Normalize hyphens → spaces so "fast-paced" matches "fast paced"
@@ -114,6 +116,8 @@ BREVITY RULES (non-negotiable):
 - sourceUrl: use the most specific URL from the scraped data that supports this exact bullet. For news bullets use [URL:...] tags. For WARN/layoff bullets use [URL:...] embedded in layoff signals. For Glassdoor bullets use the glassdoor URL. Empty string only if no URL exists.
 - sourceName: short label like "Glassdoor", "Reddit", "SEC 8-K", "WARN Act", "layoffs.fyi", "Google News", "Levels.fyi", "BLS". Empty string if no source.
 - NEVER write "cannot confirm", "not available", "no data found", "unable to verify", "not published". If data is absent, omit the point entirely — don't mention it.
+- SOURCE CONSISTENCY: If scraped sources clearly exist for a source family, do not say that source family has "no reviews", "no discussions", or "does not exist". Example: if Glassdoor sources > 0, you may say the extracted sentiment is thin, mixed, or low-confidence, but you may NOT say there are no Glassdoor reviews. If Reddit threads > 0, you may say the sample is weak or irrelevant, but you may NOT say there are no Reddit discussions.
+- NEVER convert "weak", "mixed", "low-confidence", or "thin" evidence into "no evidence". Sparse signals still count as real signals.
 - offerAnalysis: one bullet per offer term, one sentence each.
 - dataGaps: only include gaps that are themselves a RED FLAG or meaningful signal — e.g. ["No Glassdoor reviews (suppressed?)", "Zero public financials", "No press coverage found", "Salary range not listed"]. Skip trivial gaps like 'CEO approval not found' or 'H-1B data absent'. Empty array [] if no meaningful gaps. 8 words max per item.
 - Timeline sourceUrl: copy exact URL from [URL:...] tags in the news data. Empty string "" if no match.
@@ -125,6 +129,7 @@ BREVITY RULES (non-negotiable):
 - COURT CASES: Federal employment/wage cases are concrete red flags. 1 recent case = watch; 2+ cases or any class action = critical. Flag them in redFlags with title, date, and one-sentence impact. Cite "CourtListener" as sourceName. Securities fraud cases lower financialStability by 1–2 points.
 - NLRB: Unfair labor practice complaints are a culture red flag. Active cases or multiple filings = redFlag (critical). Union election petitions signal significant employee dissatisfaction. Cite "NLRB" as sourceName.
 - H-1B LCA DATA: When present, these are DOL-certified wages the company legally committed to paying for sponsored workers — extremely reliable salary floor data. Use lca.wageMedian as a hard data point in salaryIntelligence and salaryAnalysis. Flag if candidate's target is well above or below LCA median. Always cite "DOL H-1B LCA" as sourceName.
+- H-1B ABSENCE: If LCA data is absent, omit H-1B entirely. Do NOT write that H-1B data is missing.
 - OSHA: Safety violations and inspections are a critical flag for any role involving physical work or facilities. Multiple citations or willful violations = redFlag (critical). A single informal citation in a large company may be minor. Cite "OSHA" as sourceName. For desk/remote roles, mention only if violations are severe or widespread.
 - GITHUB: Mention GitHub only for clearly technical roles or when the company explicitly sells an engineering-first culture. Ignore GitHub for editorial, sales, finance, legal, HR, and general corporate roles.
 - REMOTE POLICY: If the posting does not clearly say remote, hybrid, or on-site, mark Remote Policy Reliability as yellow and say the policy is not specified and should be confirmed in writing. Do not assume in-office from silence.
@@ -201,6 +206,16 @@ Employee pros (verbatim themes): ${scrapedData.glassdoor?.pros?.slice(0, 10).joi
 Employee cons (verbatim themes): ${scrapedData.glassdoor?.cons?.slice(0, 10).join(' | ') || 'none scraped'}
 Interview difficulty: ${scrapedData.glassdoor?.interviewDifficulty ?? '?'}/5 | Interview experience: ${scrapedData.glassdoor?.interviewExperience ? `${scrapedData.glassdoor.interviewExperience.positive}% positive` : '?'}
 Interview quotes: ${scrapedData.glassdoor?.interviewQuotes?.slice(0, 2).join(' | ') || 'none'}
+Glassdoor source count: ${sources.filter(s => s.type === 'glassdoor').length} | Reddit thread count: ${scrapedData.reddit?.length ?? 0} | SEC/enrichment source count: ${sources.filter(s => s.type === 'sec').length}
+Glassdoor source titles: ${sources.filter(s => s.type === 'glassdoor').slice(0, 8).map(s => s.title).join(' | ') || 'none'}
+Reddit thread titles: ${scrapedData.reddit?.slice(0, 8).map(t => t.title).join(' | ') || 'none'}
+
+COMPANY IDENTITY:
+Employer-facing brand: ${companyIdentity?.employerBrand || request.companyName}
+Parent / holding company: ${companyIdentity?.parentCompany || 'none detected'}
+Identity note: ${companyIdentity?.relationshipSummary || 'No parent-company relationship detected from the posting.'}
+
+When a parent company exists, use brand-level evidence for culture, role experience, and employee sentiment, and use parent-level evidence for SEC/public-company financials and investor-relations context. Do not blur the two unless the evidence clearly applies to both.
 
 NEWS (${scrapedData.news?.length ?? 0} articles — newest first):
 ${(scrapedData.news ?? [])
@@ -398,6 +413,18 @@ Return ONLY valid JSON, no markdown fences, no text outside the JSON object:
           parsed = buildFallback(request, scrapedData);
         }
 
+        parsed = sanitizeGeneratedAnalysis(parsed, {
+          glassdoorCount: sources.filter(s => s.type === 'glassdoor').length,
+          redditCount: scrapedData.reddit?.length ?? 0,
+          secSourceCount: sources.filter(s => s.type === 'sec' || s.type === 'crunchbase').length,
+          hasPublicFinancials: Boolean(scrapedData.enrich?.companyFacts?.isPublic),
+          hasCourtCases: Boolean(scrapedData.enrich?.courtCases?.length),
+          hasGithub: Boolean(scrapedData.enrich?.github?.orgHandle),
+          hasNLRB: Boolean(scrapedData.enrich?.nlrbSignals?.length),
+          hasOSHA: Boolean(scrapedData.enrich?.oshaSignals?.length),
+          hasLCA: Boolean(scrapedData.enrich?.lca),
+        }, scrapedData);
+
         const targetSalary = ((request.desiredSalaryMin ?? 0) + (request.desiredSalaryMax ?? 0)) / 2;
 
         // Hard guardrail: never show negotiation playbook without an actual offer letter
@@ -409,6 +436,7 @@ Return ONLY valid JSON, no markdown fences, no text outside the JSON object:
         const result = {
           id: Math.random().toString(36).slice(2, 10),
           companyName: request.companyName,
+          companyIdentity,
           role: scrapedData.jobPosting?.title || extractRole(jobText) || 'Position',
           location: request.location,
           analyzedAt: new Date().toISOString(),
@@ -448,6 +476,125 @@ Return ONLY valid JSON, no markdown fences, no text outside the JSON object:
       Connection: 'keep-alive',
     },
   });
+}
+
+interface AnalysisSanityContext {
+  glassdoorCount: number;
+  redditCount: number;
+  secSourceCount: number;
+  hasPublicFinancials: boolean;
+  hasCourtCases: boolean;
+  hasGithub: boolean;
+  hasNLRB: boolean;
+  hasOSHA: boolean;
+  hasLCA: boolean;
+}
+
+function sanitizeGeneratedAnalysis(
+  parsed: Record<string, unknown>,
+  ctx: AnalysisSanityContext,
+  scrapedData: ClaudeRequestBody['scrapedData'],
+): Record<string, unknown> {
+  const contradictoryPatterns: RegExp[] = [];
+
+  if (ctx.glassdoorCount > 0) {
+    contradictoryPatterns.push(/no glassdoor/i, /zero us employee culture data/i, /no employee culture data/i);
+  }
+  if (ctx.redditCount > 0) {
+    contradictoryPatterns.push(/no reddit/i, /no discussions/i);
+  }
+  if (ctx.glassdoorCount > 0 || ctx.redditCount > 0) {
+    contradictoryPatterns.push(/no glassdoor, blind, or reddit reviews exist/i);
+  }
+  if (ctx.hasLCA) {
+    contradictoryPatterns.push(/no direct h-?1b lca data found/i, /no h-?1b/i);
+  } else {
+    contradictoryPatterns.push(/no direct h-?1b lca data found/i);
+  }
+  if (ctx.hasPublicFinancials || ctx.secSourceCount > 0) {
+    contradictoryPatterns.push(/zero public financials/i, /no public financials/i, /no sec filings/i);
+  }
+  if (ctx.hasCourtCases) contradictoryPatterns.push(/no court records/i, /no court cases/i);
+  if (ctx.hasGithub) contradictoryPatterns.push(/no github/i);
+  if (ctx.hasNLRB) contradictoryPatterns.push(/no nlrb/i);
+  if (ctx.hasOSHA) contradictoryPatterns.push(/no osha/i);
+
+  const scrubValue = (value: unknown): unknown => {
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) return trimmed;
+      if (contradictoryPatterns.some(pattern => pattern.test(trimmed))) return '';
+      return trimmed;
+    }
+
+    if (Array.isArray(value)) {
+      return value
+        .map(scrubValue)
+        .filter(item => {
+          if (item === '' || item === null || item === undefined) return false;
+          if (typeof item === 'object' && item && 'text' in item && !(item as { text?: string }).text) return false;
+          return true;
+        });
+    }
+
+    if (value && typeof value === 'object') {
+      const next: Record<string, unknown> = {};
+      for (const [key, nested] of Object.entries(value)) {
+        const scrubbed = scrubValue(nested);
+        if (scrubbed === '' || scrubbed === null || scrubbed === undefined) continue;
+        if (Array.isArray(scrubbed) && scrubbed.length === 0) continue;
+        next[key] = scrubbed;
+      }
+      return next;
+    }
+
+    return value;
+  };
+
+  const sanitized = scrubValue(parsed) as Record<string, unknown>;
+
+  const companyIntelligence = Array.isArray(sanitized.companyIntelligence)
+    ? [...(sanitized.companyIntelligence as Array<Record<string, unknown>>)]
+    : [];
+
+  if (
+    ctx.glassdoorCount > 0 &&
+    scrapedData.glassdoor?.overallRating &&
+    !companyIntelligence.some(item => /glassdoor/i.test(String(item.text || '')))
+  ) {
+    companyIntelligence.unshift({
+      text: `**Glassdoor coverage exists** — ${scrapedData.glassdoor.overallRating}/5 across ${scrapedData.glassdoor.reviewCount ?? '?'} reviews, so treat sentiment as mixed or thin rather than absent.`,
+      sourceUrl: '',
+      sourceName: 'Glassdoor',
+    });
+  }
+
+  if (
+    ctx.redditCount > 0 &&
+    !companyIntelligence.some(item => /reddit/i.test(String(item.text || '')))
+  ) {
+    companyIntelligence.push({
+      text: `**Reddit discussion exists** — ${ctx.redditCount} relevant thread${ctx.redditCount === 1 ? '' : 's'} were found, so the signal may be noisy but it is not nonexistent.`,
+      sourceUrl: '',
+      sourceName: 'Reddit',
+    });
+  }
+
+  sanitized.companyIntelligence = companyIntelligence.slice(0, 4);
+
+  if (Array.isArray(sanitized.dataGaps)) {
+    sanitized.dataGaps = (sanitized.dataGaps as unknown[]).filter(item => {
+      const text = String(item || '').trim();
+      if (!text) return false;
+      if (ctx.glassdoorCount > 0 && /glassdoor/i.test(text)) return false;
+      if (ctx.redditCount > 0 && /reddit/i.test(text)) return false;
+      if (ctx.hasLCA && /h-?1b|lca/i.test(text)) return false;
+      if ((ctx.hasPublicFinancials || ctx.secSourceCount > 0) && /public financials|sec/i.test(text)) return false;
+      return true;
+    });
+  }
+
+  return sanitized;
 }
 
 function extractRole(text: string): string {

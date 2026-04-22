@@ -338,6 +338,16 @@ export default function ResultsPage() {
                   <span>{new Date(result.analyzedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span>
                 </div>
 
+                {result.companyIdentity?.parentCompany && (
+                  <div className="mb-3 inline-flex flex-wrap items-center gap-2 px-3 py-1.5 rounded-xl bg-[#0d1117]/60 border border-[#1e2736] text-[11px] text-[#aab4c5]">
+                    <span className="text-white font-medium">Brand:</span>
+                    <span>{result.companyIdentity.employerBrand}</span>
+                    <span className="text-[#4a5568]">|</span>
+                    <span className="text-white font-medium">Parent:</span>
+                    <span>{result.companyIdentity.parentCompany}</span>
+                  </div>
+                )}
+
                 {/* Verdict */}
                 <div className="flex items-center gap-3 mb-3">
                   <span className="text-2xl">{vc.icon}</span>
@@ -598,7 +608,7 @@ export default function ResultsPage() {
                       )}
                     </div>
                     <a
-                      href={`https://www.sec.gov/cgi-bin/browse-edgar?company=${encodeURIComponent(result.companyName)}&action=getcompany&type=10-K`}
+                      href={`https://www.sec.gov/cgi-bin/browse-edgar?company=${encodeURIComponent(result.companyIdentity?.parentCompany || result.companyName)}&action=getcompany&type=10-K`}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="inline-flex items-center gap-1 mt-2 text-[10px] text-indigo-400/60 hover:text-indigo-300 transition-colors"
