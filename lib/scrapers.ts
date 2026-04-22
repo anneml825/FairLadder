@@ -2156,7 +2156,6 @@ export async function scrapeSEC(
 
   const finQuery = `${secCompanyQ} revenue earnings profit financial results 2024 2025`;
   const fundQuery = `${secCompanyQ} funding raised investment series valuation`;
-  const hiringQuery = `"${secEntityName}" hiring "open roles" OR "job openings" OR headcount OR "growing team"`;
   const warnQueries = [
     `${secCompanyQ} WARN Act layoff notice site:warn.workforcegps.org OR site:edd.ca.gov OR site:labor.ny.gov`,
     `${secCompanyQ} WARN Act "mass layoff" OR "plant closing" filing`,
@@ -2165,22 +2164,17 @@ export async function scrapeSEC(
   const [
     finRss,
     fundRss,
-    hiringRss,
     warnRes1,
     warnRes2,
-    layoffsFyiRes,
-    cbResults,
-    parentResults,
   ] = await Promise.all([
     fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(finQuery)}&hl=en-US&gl=US&ceid=US:en`),
     fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(fundQuery)}&hl=en-US&gl=US&ceid=US:en`),
-    fetchHtml(`https://news.google.com/rss/search?q=${encodeURIComponent(hiringQuery)}&hl=en-US&gl=US&ceid=US:en`),
     searchWeb(warnQueries[0], 4),
     searchWeb(warnQueries[1], 4),
-    searchWeb(`site:layoffs.fyi ${secCompanyQ} layoff`, 3),
-    searchWeb(`site:crunchbase.com ${secCompanyQ} funding investors`, 4),
-    searchWeb(`${secCompanyQ} "subsidiary of" OR "division of" OR "acquired by" OR "owned by" OR "parent company"`, 4),
   ]);
+  const layoffsFyiRes: SerpResult[] = [];
+  const cbResults: SerpResult[] = [];
+  const parentResults: SerpResult[] = [];
 
   if (finRss && finRss.length > 500) {
     const $fin = cheerio.load(finRss, { xmlMode: true });
@@ -2212,15 +2206,6 @@ export async function scrapeSEC(
       if (headM) data.financialSignals.push(...headM.slice(0, 1));
     });
     sources.push({ url: `https://news.google.com/rss/search?q=${encodeURIComponent(fundQuery)}`, type: 'sec', title: `${secEntityName} Funding`, timestamp: new Date().toISOString() });
-  }
-
-  if (hiringRss && hiringRss.length > 500) {
-    const $h = cheerio.load(hiringRss, { xmlMode: true });
-    $h('item').each((_, el) => {
-      const combined = `${$h(el).find('title').text()} ${$h(el).find('description').text().replace(/<[^>]*>/g, '')}`;
-      const headM = combined.match(/(?:hiring|added|growing by|expanded by)[^,\n]{0,30}(\d[\d,]+)\s+(?:employees|workers|people|jobs)/gi);
-      if (headM) data.financialSignals.push(...headM.slice(0, 2).map(m => m.trim().slice(0, 120)));
-    });
   }
 
   // EDGAR full-text layoff search
@@ -2840,6 +2825,12 @@ async function fetchGitHub(companyName: string, companyContext?: string, identit
       orgRes.data?.description,
       orgRes.data?.blog,
     ].filter(Boolean).join(' ');
+    const orgNameNorm = norm(orgRes.data?.name ?? '');
+    const exactOrgMatch = norm(bestOrg.login) === cn || orgNameNorm === cn;
+    const looseOrgMatch = cn.length > 7 && (norm(bestOrg.login).includes(cn) || cn.includes(norm(bestOrg.login)) || orgNameNorm.includes(cn) || cn.includes(orgNameNorm));
+    if (!exactOrgMatch && !looseOrgMatch) {
+      return null;
+    }
     if (scoreCompanyMatch(companyName, getCompanyAliases(companyName, matchingContext), matchingContext, orgIdentityText, `https://github.com/${bestOrg.login}`) < 4) {
       return null;
     }
