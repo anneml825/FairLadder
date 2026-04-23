@@ -313,6 +313,17 @@ const CONFLICTING_CONTEXTS: Record<string, string[]> = {
   saas: ['energy'],
 };
 
+const SOURCE_LIMITS = {
+  news: 80,
+  reddit: 35,
+  glassdoor: 28,
+  levels: 28,
+  bls: 20,
+  sec: 24,
+  enrich: 24,
+  officialSiteLinks: 18,
+};
+
 function scoreCompanyMatch(
   companyName: string,
   aliases: string[],
@@ -380,19 +391,26 @@ async function fetchOfficialSiteSignals(
   companyDomain: string,
 ): Promise<Array<GoogleNewsResult & { type?: ScrapedSource['type'] }>> {
   const paths = [
+    '',
     '/news',
     '/newsroom',
     '/press',
     '/media',
     '/blog',
+    '/announcements',
+    '/updates',
+    '/press-releases',
     '/investors',
     '/investor-relations',
     '/investor-relations/news',
+    '/investor-relations/press-releases',
+    '/company/news',
+    '/about/news',
   ];
   const found: Array<GoogleNewsResult & { type?: ScrapedSource['type'] }> = [];
   const seen = new Set<string>();
 
-  for (const path of paths.slice(0, 7)) {
+  for (const path of paths.slice(0, 12)) {
     const url = `https://${companyDomain}${path}`;
     const html = await fetchHtml(url);
     if (!html || html.length < 200) continue;
@@ -414,7 +432,7 @@ async function fetchOfficialSiteSignals(
     }
 
     $('a[href]').each((_, el) => {
-      if (found.length >= 8) return false;
+      if (found.length >= SOURCE_LIMITS.officialSiteLinks) return false;
       const href = $(el).attr('href')?.trim();
       const anchorText = $(el).text().replace(/\s+/g, ' ').trim();
       if (!href || !anchorText || anchorText.length < 12) return;
@@ -643,8 +661,8 @@ export async function scrapeGoogleNews(
   });
 
   return {
-    results: paired.map(item => item.result).slice(0, 50),
-    sources: dedupeSources(paired.map(item => item.source)).slice(0, 50),
+    results: paired.map(item => item.result).slice(0, SOURCE_LIMITS.news),
+    sources: dedupeSources(paired.map(item => item.source)).slice(0, SOURCE_LIMITS.news),
   };
 }
 
@@ -778,7 +796,7 @@ export async function scrapeReddit(
   type RedditJsonPost = { data: { selftext?: string } };
   type RedditJsonComment = { data: { body?: string; score?: number } };
 
-  await Promise.all(candidateUrls.slice(0, 12).map(async (r) => {
+  await Promise.all(candidateUrls.slice(0, 20).map(async (r) => {
     const subredditM = r.link.match(/reddit\.com\/r\/([^/]+)/);
     let body = r.snippet;
     let topComments: string[] = [];
@@ -836,7 +854,7 @@ export async function scrapeReddit(
     return b.topComments.length - a.topComments.length;
   });
 
-  return { threads: threads.slice(0, 20), sources: dedupeSources(sources).slice(0, 20) };
+  return { threads: threads.slice(0, SOURCE_LIMITS.reddit), sources: dedupeSources(sources).slice(0, SOURCE_LIMITS.reddit) };
 }
 
 // ── GOOGLE CUSTOM SEARCH ─────────────────────────────────────────────────────
@@ -1039,7 +1057,7 @@ export async function scrapeGlassdoor(
   if (hasCoreGlassdoorSnapshot(data)) {
     return {
       data: { ...data, pros: [...new Set(data.pros)].slice(0, 6), cons: [...new Set(data.cons)].slice(0, 6) },
-      sources: dedupeSources(sources).slice(0, 12),
+      sources: dedupeSources(sources).slice(0, SOURCE_LIMITS.glassdoor),
     };
   }
 
@@ -1100,7 +1118,7 @@ export async function scrapeGlassdoor(
   if (hasCoreGlassdoorSnapshot(data)) {
     return {
       data: { ...data, pros: [...new Set(data.pros)].slice(0, 6), cons: [...new Set(data.cons)].slice(0, 6) },
-      sources: dedupeSources(sources).slice(0, 12),
+      sources: dedupeSources(sources).slice(0, SOURCE_LIMITS.glassdoor),
     };
   }
 
@@ -1143,7 +1161,7 @@ export async function scrapeGlassdoor(
   if (hasCoreGlassdoorSnapshot(data)) {
     return {
       data: { ...data, pros: [...new Set(data.pros)].slice(0, 6), cons: [...new Set(data.cons)].slice(0, 6) },
-      sources: dedupeSources(sources).slice(0, 12),
+      sources: dedupeSources(sources).slice(0, SOURCE_LIMITS.glassdoor),
     };
   }
 
@@ -1257,7 +1275,7 @@ export async function scrapeGlassdoor(
   if (hasCoreGlassdoorSnapshot(data)) {
     return {
       data: { ...data, pros: [...new Set(data.pros)].slice(0, 6), cons: [...new Set(data.cons)].slice(0, 6) },
-      sources: dedupeSources(sources).slice(0, 12),
+      sources: dedupeSources(sources).slice(0, SOURCE_LIMITS.glassdoor),
     };
   }
 
@@ -1296,7 +1314,7 @@ export async function scrapeGlassdoor(
       .filter(source => !source.url.includes('reddit.com'))
       .filter(source => !isEntityNameClash(companyName, source.title, source.url))
       .filter(source => scoreCompanyMatch(companyName, aliases, matchingContext, source.title, source.url) >= 4)
-      .slice(0, 12),
+      .slice(0, SOURCE_LIMITS.glassdoor),
   };
 }
 
@@ -1391,7 +1409,7 @@ export async function scrapeLevels(
     sources.push({ url: r.link, type: 'levels', title: r.title.slice(0, 80), timestamp: new Date().toISOString() });
   }
 
-  return { data, sources: dedupeSources(sources).slice(0, 18) };
+  return { data, sources: dedupeSources(sources).slice(0, SOURCE_LIMITS.levels) };
 }
 
 // ── BLS ──────────────────────────────────────────────────────────────────────
@@ -1873,7 +1891,7 @@ export async function scrapeBLS(
     data.locationData = '';
   }
 
-  return { data, sources: dedupeSources(sources).slice(0, 12) };
+  return { data, sources: dedupeSources(sources).slice(0, SOURCE_LIMITS.bls) };
 }
 
 
@@ -2292,7 +2310,7 @@ export async function scrapeSEC(
     data.fundingSignals.length > 0 ||
     data.financialSignals.length > 0;
 
-  return { data, sources: hasSignals ? dedupeSources(sources) : [] };
+  return { data, sources: hasSignals ? dedupeSources(sources).slice(0, SOURCE_LIMITS.sec) : [] };
 }
 
 // ── JOB POSTING ──────────────────────────────────────────────────────────────
@@ -3107,7 +3125,7 @@ export async function scrapeEnrichment(
       oshaSignals: oshaSignals.length > 0 ? oshaSignals : undefined,
       lca: lca ?? undefined,
     },
-    sources: dedupeSources(sources),
+    sources: dedupeSources(sources).slice(0, SOURCE_LIMITS.enrich),
   };
 }
 
