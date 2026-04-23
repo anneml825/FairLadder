@@ -2543,6 +2543,10 @@ function edgarNameVariants(name: string): string[] {
   const variants = new Set([name, stripped]);
   // Also try without trailing punctuation
   variants.add(name.replace(/[.,]+$/, '').trim());
+  if (!/\bltd\.?$/i.test(name)) variants.add(`${name} Ltd.`);
+  if (!/\binc\.?$/i.test(name)) variants.add(`${name} Inc.`);
+  if (/\bholdings?$/i.test(name)) variants.add(`${name} Ltd.`);
+  if (!/\bholdings?\b/i.test(name) && stripped.length > 2) variants.add(`${stripped} Holdings Ltd.`);
   return [...variants].filter(v => v.length > 2);
 }
 
